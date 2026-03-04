@@ -1,0 +1,112 @@
+{
+  "reply_types": {
+    "pricing": {
+      "description": "Prospect asks about pricing, cost, or rates",
+      "keywords": ["price", "pricing", "cost", "rates", "how much", "fee", "charge", "budget", "investment"],
+      "template_hint": "Explain bespoke pricing, mention the Growth Consultation call analyses their setup and gives a tailored price structure + roadmap. Trendfeed caps clients at 15-20 for depth of service."
+    },
+    "services": {
+      "description": "Prospect asks what services are offered",
+      "keywords": ["services", "what do you do", "what do you offer", "what exactly", "offerings", "email marketing", "sms"],
+      "template_hint": "Focus on the transformation (adding significant monthly revenue with no ad spend), not a fixed menu. Usually email & SMS, plus upsells, loyalty, referral programmes. Call to determine exact fit."
+    },
+    "case_studies": {
+      "description": "Prospect asks for proof, case studies, or results",
+      "keywords": ["case study", "case studies", "proof", "results", "examples", "portfolio", "show me", "evidence"],
+      "template_hint": "Confirm you have case studies. Offer to walk through results on the Growth Consultation call + custom roadmap."
+    },
+    "pitch_deck": {
+      "description": "Prospect asks to send a pitch deck or presentation",
+      "keywords": ["pitch deck", "deck", "presentation", "brochure", "pdf", "send me", "materials"],
+      "template_hint": "No pre-defined deck because services are bespoke. The call provides tailored analysis."
+    },
+    "referral": {
+      "description": "Prospect refers to another contact or person",
+      "keywords": ["speak to", "talk to", "contact", "colleague", "manager", "boss", "forward", "cc"],
+      "template_hint": "FLAG FOR MANUAL HANDLING. Draft a warm intro email to the referred person.",
+      "flag": true
+    },
+    "niche_experience": {
+      "description": "Prospect asks about experience in their niche or industry",
+      "keywords": ["industry", "niche", "experience with", "worked with", "clients in", "familiar with", "space"],
+      "template_hint": "REQUIRES WEBSITE LOOKUP. Scrape prospect's website, classify their category, pick 2-3 matching Trendfeed clients.",
+      "requires_scrape": true
+    },
+    "differentiation": {
+      "description": "Prospect asks what makes Trendfeed different or why choose you",
+      "keywords": ["different", "stand out", "why you", "what makes", "unique", "better than", "compared to"],
+      "template_hint": "Boutique, results-driven, scale vertically not horizontally. Max 15-20 clients. Strict vetting. Zero pressure. Money-back guarantee."
+    },
+    "source": {
+      "description": "Prospect asks where you got their email or how you found them",
+      "keywords": ["where did you get", "how did you find", "who gave you", "remove me", "unsubscribe", "stop emailing", "opt out", "found my email"],
+      "template_hint": "Keep it light. 'We came across {{companyName}} and saw great potential.' Pivot to value. NOTE: if they say unsubscribe/remove, classify as unsubscribe instead."
+    },
+    "consistency": {
+      "description": "Prospect questions results consistency, failed clients, or asks about failures",
+      "keywords": ["always work", "every client", "failed", "not work", "guarantee", "consistent", "success rate"],
+      "template_hint": "Honest: can't work for every brand. But results are common because of strict vetting. That's why the guarantee exists."
+    },
+    "risk": {
+      "description": "Prospect expresses concern about risk or has been burned before",
+      "keywords": ["risk", "burned", "bad experience", "last agency", "wasted money", "previous agency", "trust"],
+      "template_hint": "Empathise. Bringing in the wrong client hurts Trendfeed too. Initial call determines if it's a home-run, then they de-risk it."
+    },
+    "guarantee": {
+      "description": "Prospect asks about guarantees or performance-based pricing",
+      "keywords": ["guarantee", "performance", "results-based", "pay on results", "no results no pay", "money back"],
+      "template_hint": "Full money-back guarantee. Also open to pure performance on a case-by-case basis. Need to analyse their situation first."
+    },
+    "existing_agency": {
+      "description": "Prospect already has an email agency or is doing email marketing themselves",
+      "keywords": ["already have", "current agency", "working with", "in-house", "already doing", "have someone"],
+      "template_hint": "Congrats on existing work. Experience with 40+ partners shows there's always room to grow. Brief chat → free audit doc → useful tips either way."
+    },
+    "send_examples": {
+      "description": "Prospect asks to see examples of work or client references",
+      "keywords": ["examples", "references", "referees", "sample", "show me your work", "portfolio"],
+      "template_hint": "Happy to share after confirming mutual fit on a brief call. Won't bother existing clients for references before that."
+    },
+    "book_call_with_us": {
+      "description": "Prospect asks us to book a call with them or their team instead",
+      "keywords": ["book a call with us", "schedule with us", "our calendar", "contact us", "reach out to us"],
+      "template_hint": "Politely redirect to Calendly. The form collects context + triggers prep automations."
+    },
+    "free_trial": {
+      "description": "Prospect asks for a free trial or doesn't want to pay",
+      "keywords": ["free trial", "trial", "don't want to pay", "not paying", "free", "pro bono", "without paying"],
+      "template_hint": "Empathise but Trendfeed is a business with expenses. After working with 40+ 7 & 8 figure clients, Trendfeed knows what it can deliver."
+    },
+    "auto_reply": {
+      "description": "Auto-reply or out of office message",
+      "keywords": ["out of office", "ooo", "automatic reply", "auto-reply", "away from", "on vacation", "on leave", "will be back"],
+      "template_hint": "IGNORE. Do not draft. Log as Auto-reply.",
+      "no_draft": true
+    },
+    "unsubscribe": {
+      "description": "Prospect wants to unsubscribe or be removed from the list",
+      "keywords": ["unsubscribe", "remove me", "stop emailing", "opt out", "do not contact", "take me off", "don't email"],
+      "template_hint": "DO NOT DRAFT. Flag in Slack immediately. Process unsubscribe in PlusVibe.",
+      "no_draft": true,
+      "flag": true,
+      "urgent": true
+    },
+    "hostile": {
+      "description": "Prospect is rude, angry, or aggressive",
+      "keywords": ["scam", "spam", "fraud", "lawsuit", "legal action", "report you", "angry", "furious", "disgusting"],
+      "template_hint": "Draft a brief polite close-out. Flag for manager.",
+      "flag": true
+    },
+    "interested": {
+      "description": "Prospect is interested, wants to proceed, or asks to book a call",
+      "keywords": ["interested", "sounds good", "tell me more", "let's chat", "book a call", "calendly", "when are you free"],
+      "template_hint": "Warm response confirming the call. Direct to Calendly link."
+    },
+    "uncategorised": {
+      "description": "Reply doesn't fit any known category",
+      "keywords": [],
+      "template_hint": "Draft best-effort response. Flag as Uncategorised for manager + potential new template.",
+      "flag": true
+    }
+  }
+}

@@ -1,0 +1,10 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+httpx==0.28.1
+anthropic==0.40.0
+slack-sdk==3.33.4
+beautifulsoup4==4.12.3
+upstash-redis==1.1.0
+python-dotenv==1.0.1
+python-multipart==0.0.20
+pydantic==2.10.3

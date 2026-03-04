@@ -1,0 +1,41 @@
+{
+  "categories": {
+    "skincare": {
+      "keywords": ["skincare", "skin care", "serum", "moisturizer", "anti-aging", "wrinkle", "retinol", "spf", "sunscreen"],
+      "clients": ["Frownies", "Dermazen", "Oxygenetix", "Happy Head"]
+    },
+    "cosmetics": {
+      "keywords": ["cosmetics", "makeup", "foundation", "lipstick", "mascara", "beauty", "concealer", "blush"],
+      "clients": ["Oxygenetix", "Happy Head", "Frownies", "Dermazen"]
+    },
+    "supplements": {
+      "keywords": ["supplements", "vitamins", "nutrition", "health", "wellness", "protein", "amino", "omega", "probiotic"],
+      "clients": ["KaraMD", "NF Sports"]
+    },
+    "food": {
+      "keywords": ["food", "beverage", "drink", "snack", "grocery", "organic", "diet", "calorie", "sauce", "condiment"],
+      "clients": ["Walden Farms"]
+    },
+    "pet": {
+      "keywords": ["pet", "dog", "cat", "animal", "veterinary", "vet", "puppy", "kitten", "paw", "fur"],
+      "clients": ["Innovet"]
+    },
+    "clothing": {
+      "keywords": ["clothing", "apparel", "fashion", "wear", "shirt", "jacket", "pants", "dress", "outfit", "sleepwear", "pyjama", "loungewear"],
+      "clients": ["Drowsy Sleep Co"]
+    },
+    "body_care": {
+      "keywords": ["body care", "lotion", "body wash", "soap", "massage", "hair care", "shampoo", "conditioner", "spa"],
+      "clients": ["Earthly Body"]
+    },
+    "tech": {
+      "keywords": ["tech", "technology", "gadget", "accessory", "accessories", "electronic", "device", "cable", "charger", "wallet"],
+      "clients": ["Rolling Square"]
+    },
+    "other": {
+      "keywords": [],
+      "clients": []
+    }
+  },
+  "fallback_line": "40+ brands across a dozen industries"
+}
