@@ -11,10 +11,10 @@ WORKSPACE_ID = os.getenv("PLUSVIBE_WORKSPACE_ID")
 
 class ReplyPayload(BaseModel):
     """Normalised reply data extracted from PlusVibe webhook."""
-    email_id: str
-    thread_id: Optional[str] = None
-    from_email: str
-    to_email: str
+    email_id: str          # unibox email ID needed to send reply
+    lead_id: Optional[str] = None
+    from_email: str        # prospect's email
+    to_email: str          # our sending email (actual_replied_from)
     subject: str
     body: str
     first_name: Optional[str] = None
@@ -27,26 +27,73 @@ class ReplyPayload(BaseModel):
 
 def parse_webhook(payload: dict) -> ReplyPayload:
     """
-    Parse a PlusVibe webhook payload into a normalised ReplyPayload.
-    Handles the nested structure PlusVibe sends.
+    Parse a LEAD_MARKED_AS_INTERESTED webhook payload into a normalised ReplyPayload.
+
+    Key fields from this event type:
+      email, first_name, last_name, company_name, company_website,
+      last_lead_reply / text_body, last_lead_reply_subject / latest_subject,
+      actual_replied_from, lead_id, campaign_id, campaign_name
     """
+    # The payload may be wrapped in a "data" key or flat
     data = payload.get("data", payload)
-    lead = data.get("lead", data.get("contact", {}))
+
+    body_text = (
+        data.get("last_lead_reply")
+        or data.get("text_body")
+        or data.get("latest_message")
+        or data.get("body")
+        or ""
+    )
+    subject = (
+        data.get("last_lead_reply_subject")
+        or data.get("latest_subject")
+        or data.get("subject")
+        or ""
+    )
 
     return ReplyPayload(
+        # email_id will be populated after fetching from unibox if not present
         email_id=str(data.get("email_id") or data.get("id") or ""),
-        thread_id=str(data.get("thread_id") or data.get("email_thread_id") or ""),
-        from_email=data.get("from_address") or data.get("from") or lead.get("email", ""),
-        to_email=data.get("to_address") or data.get("to", ""),
-        subject=data.get("subject", ""),
-        body=_strip_html(data.get("email_body") or data.get("body") or data.get("text", "")),
-        first_name=lead.get("first_name") or data.get("first_name"),
-        last_name=lead.get("last_name") or data.get("last_name"),
-        company_name=lead.get("company_name") or lead.get("company") or data.get("company_name"),
-        website=lead.get("website") or lead.get("company_url") or data.get("website"),
+        lead_id=str(data.get("lead_id") or ""),
+        from_email=data.get("email") or data.get("from_address") or data.get("from") or "",
+        to_email=data.get("actual_replied_from") or data.get("to_address") or data.get("to") or "",
+        subject=subject,
+        body=_strip_html(body_text),
+        first_name=data.get("first_name"),
+        last_name=data.get("last_name"),
+        company_name=data.get("company_name"),
+        website=data.get("company_website") or data.get("website"),
         campaign_id=str(data.get("campaign_id") or ""),
         campaign_name=data.get("campaign_name"),
     )
+
+
+async def fetch_latest_email_id(lead_email: str) -> Optional[str]:
+    """
+    Look up the most recent unibox email ID for a lead by their email address.
+    Used when the webhook payload doesn't include a direct email_id.
+    """
+    headers = {"x-api-key": API_KEY}
+    params = {
+        "workspace_id": WORKSPACE_ID,
+        "email": lead_email,
+        "limit": 1,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/unibox/emails",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+            emails = data.get("emails") or data.get("data") or []
+            if emails:
+                return str(emails[0].get("id") or emails[0].get("email_id") or "")
+    except Exception:
+        pass
+    return None
 
 
 def _strip_html(text: str) -> str:
@@ -97,7 +144,7 @@ async def get_workspaces() -> dict:
 async def register_webhook(url: str, events: list[str] | None = None) -> dict:
     """Register our Railway URL as a PlusVibe webhook."""
     if events is None:
-        events = ["ALL_EMAIL_REPLIES"]
+        events = ["LEAD_MARKED_AS_INTERESTED"]
 
     headers = {
         "x-api-key": API_KEY,

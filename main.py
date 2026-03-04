@@ -10,7 +10,7 @@ load_dotenv()
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from fastapi.responses import JSONResponse
 
-from src.integrations.plusvibe import parse_webhook, send_reply
+from src.integrations.plusvibe import parse_webhook, send_reply, fetch_latest_email_id
 from src.integrations.slack import (
     verify_slack_signature,
     post_review_message,
@@ -68,13 +68,18 @@ async def _process_reply(payload: dict):
         reply = parse_webhook(payload)
         log.info(f"Processing reply from {reply.from_email} ({reply.company_name})")
 
-        # 1. Classify
+        # 1. Resolve email_id if not in webhook payload (needed to send reply)
+        if not reply.email_id and reply.from_email:
+            reply.email_id = await fetch_latest_email_id(reply.from_email) or ""
+            log.info(f"Resolved email_id from unibox: {reply.email_id}")
+
+        # 2. Classify
         classification = await classify_reply(reply.body, reply.subject)
         reply_type = classification["reply_type"]
         meta = get_reply_type_meta(reply_type)
         log.info(f"Classified as: {reply_type} (confidence: {classification['confidence']})")
 
-        # 2. Handle no-draft types immediately
+        # 3. Handle no-draft types immediately
         if meta.get("no_draft"):
             if reply_type == "unsubscribe":
                 post_unsubscribe_alert(
@@ -87,17 +92,17 @@ async def _process_reply(payload: dict):
                 log.info(f"Skipping draft for reply type: {reply_type}")
             return
 
-        # 3. Scrape website if needed
+        # 4. Scrape website if needed
         category = "other"
         client_refs = []
         if meta.get("requires_scrape") or reply_type == "niche_experience":
             category, client_refs = await scrape_and_classify(reply.website or "")
             log.info(f"Scraped category: {category}, clients: {client_refs}")
 
-        # 4. Get few-shot examples
+        # 5. Get few-shot examples
         few_shots = get_few_shot_examples(reply_type)
 
-        # 5. Draft response
+        # 6. Draft response
         draft = await draft_response(
             reply_type=reply_type,
             first_name=reply.first_name or "there",
@@ -110,7 +115,7 @@ async def _process_reply(payload: dict):
         )
         log.info(f"Draft created ({len(draft)} chars)")
 
-        # 6. Post to Slack for review
+        # 7. Post to Slack for review
         flag = meta.get("flag", False)
         flag_reason = ""
         if reply_type == "referral":
@@ -135,7 +140,7 @@ async def _process_reply(payload: dict):
         )
         log.info(f"Posted to Slack: ts={slack_ts}")
 
-        # 7. Store pending state for when manager approves
+        # 8. Store pending state for when manager approves
         store_pending(reply.email_id, {
             "reply": reply.model_dump(),
             "reply_type": reply_type,
