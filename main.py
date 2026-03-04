@@ -73,6 +73,12 @@ async def _process_reply(payload: dict):
             reply.email_id = await fetch_latest_email_id(reply.from_email) or ""
             log.info(f"Resolved email_id from unibox: {reply.email_id}")
 
+        # Use lead_id as fallback identifier if email_id is still empty
+        record_id = reply.email_id or reply.lead_id or reply.from_email
+        if not record_id:
+            log.error("No identifier available for this reply, skipping")
+            return
+
         # 2. Classify
         classification = await classify_reply(reply.body, reply.subject)
         reply_type = classification["reply_type"]
@@ -126,7 +132,7 @@ async def _process_reply(payload: dict):
             flag_reason = "Uncategorised — potential new template"
 
         slack_ts = post_review_message(
-            email_id=reply.email_id,
+            email_id=record_id,
             first_name=reply.first_name or "",
             last_name=reply.last_name or "",
             company_name=reply.company_name or "",
@@ -141,7 +147,7 @@ async def _process_reply(payload: dict):
         log.info(f"Posted to Slack: ts={slack_ts}")
 
         # 8. Store pending state for when manager approves
-        store_pending(reply.email_id, {
+        store_pending(record_id, {
             "reply": reply.model_dump(),
             "reply_type": reply_type,
             "category": category,
