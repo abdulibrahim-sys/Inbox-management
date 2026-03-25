@@ -1,3 +1,4 @@
+import json
 import os
 import hashlib
 import hmac
@@ -159,6 +160,139 @@ def _update_message_status(channel: str, ts: str, status_text: str):
         )
     except SlackApiError:
         pass
+
+
+def post_followup_review(
+    lead_email: str,
+    first_name: str,
+    last_name: str,
+    company_name: str,
+    stage: int,
+    draft_followup: str,
+    thread_summary: str,
+) -> str:
+    """
+    Post a follow-up review message to Slack.
+    Returns message ts for later updates.
+    """
+    stage_labels = {1: "24-hour", 2: "3-day", 3: "5-day (final)"}
+    stage_label = stage_labels.get(stage, f"Stage {stage}")
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"🔄 FOLLOW-UP #{stage} — {stage_label}"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*👤 Prospect:*\n{first_name} {last_name}"},
+                {"type": "mrkdwn", "text": f"*🏢 Company:*\n{company_name}"},
+                {"type": "mrkdwn", "text": f"*📧 Email:*\n{lead_email}"},
+                {"type": "mrkdwn", "text": f"*📍 Stage:*\n{stage_label} follow-up"},
+            ],
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*── Thread Context ──*\n{thread_summary[:1500]}",
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*── Drafted Follow-up ──*\n{draft_followup}",
+            },
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": "Approving saves as *draft in PlusVibe* for manual send."},
+            ],
+        },
+        {
+            "type": "actions",
+            "block_id": f"followup_actions_{lead_email}_{stage}",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✅ Approve (Save Draft)"},
+                    "style": "primary",
+                    "action_id": "approve_followup",
+                    "value": json.dumps({"lead_email": lead_email, "stage": stage}),
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ Deny / Edit"},
+                    "style": "danger",
+                    "action_id": "deny_edit_followup",
+                    "value": json.dumps({"lead_email": lead_email, "stage": stage}),
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🛑 Cancel Sequence"},
+                    "action_id": "cancel_followup",
+                    "value": lead_email,
+                },
+            ],
+        },
+    ]
+
+    response = client.chat_postMessage(
+        channel=SLACK_CHANNEL_ID,
+        blocks=blocks,
+        text=f"Follow-up #{stage} for {first_name} {last_name} at {company_name} — review needed",
+    )
+    return response["ts"]
+
+
+def open_followup_edit_modal(trigger_id: str, lead_email: str, stage: int, current_draft: str):
+    """Open a Slack modal for editing a follow-up draft."""
+    meta = json.dumps({"lead_email": lead_email, "stage": stage})
+    client.views_open(
+        trigger_id=trigger_id,
+        view={
+            "type": "modal",
+            "callback_id": "edit_followup_modal",
+            "title": {"type": "plain_text", "text": "Edit Follow-up"},
+            "submit": {"type": "plain_text", "text": "Save Draft"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": meta,
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "edited_followup",
+                    "label": {"type": "plain_text", "text": "Edit the follow-up below:"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "followup_text",
+                        "multiline": True,
+                        "initial_value": current_draft,
+                    },
+                }
+            ],
+        },
+    )
+
+
+def update_message_draft_saved(channel: str, ts: str, manager: str):
+    """Update the Slack message after follow-up draft is saved."""
+    _update_message_status(
+        channel, ts,
+        f"📝 Draft saved in PlusVibe by {manager} at <!date^{int(time.time())}^{{time}}|now>"
+    )
+
+
+def update_message_cancelled(channel: str, ts: str, manager: str):
+    """Update the Slack message after follow-up sequence is cancelled."""
+    _update_message_status(
+        channel, ts,
+        f"🛑 Sequence cancelled by {manager} at <!date^{int(time.time())}^{{time}}|now>"
+    )
 
 
 def post_unsubscribe_alert(first_name: str, last_name: str, company_name: str, from_email: str):

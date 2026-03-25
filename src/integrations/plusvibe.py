@@ -137,6 +137,95 @@ async def send_reply(reply_to_id: str, subject: str, from_email: str, to_email: 
         return response.json()
 
 
+async def get_lead_status(lead_email: str) -> Optional[str]:
+    """Check a lead's label/status in PlusVibe. Returns the label string or None."""
+    headers = {"x-api-key": API_KEY}
+    params = {
+        "workspace_id": WORKSPACE_ID,
+        "email": lead_email,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/lead/get",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+            # Label might be nested in lead_data or top-level
+            return data.get("label") or data.get("lead_data", {}).get("label")
+    except Exception:
+        return None
+
+
+async def get_email_thread(lead_email: str) -> list[dict]:
+    """Fetch the full email thread for a lead from the unibox."""
+    headers = {"x-api-key": API_KEY}
+    params = {
+        "workspace_id": WORKSPACE_ID,
+        "lead": lead_email,
+        "email_type": "all",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/unibox/emails",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            result = response.json()
+            emails = result.get("data") or []
+            return [
+                {
+                    "id": e.get("id"),
+                    "message_id": e.get("message_id"),
+                    "from": e.get("lead") if e.get("is_unread") is not None else "",
+                    "subject": e.get("subject", ""),
+                    "body": _strip_html(
+                        e.get("body", {}).get("text", "")
+                        or e.get("content_preview", "")
+                    ),
+                    "timestamp": e.get("timestamp_created", ""),
+                }
+                for e in emails
+            ]
+    except Exception:
+        return []
+
+
+async def save_draft(parent_message_id: str, from_email: str, subject: str, body: str) -> dict:
+    """Save an email as a draft in PlusVibe unibox (not auto-send)."""
+    headers = {
+        "x-api-key": API_KEY,
+        "Content-Type": "application/json",
+    }
+    params = {"workspace_id": WORKSPACE_ID}
+    payload = {
+        "parent_message_id": parent_message_id,
+        "from": from_email,
+        "subject": subject if subject.startswith("Re:") else f"Re: {subject}",
+        "body": body,
+    }
+
+    import logging
+    log = logging.getLogger(__name__)
+    log.info(f"Saving draft: parent_message_id={parent_message_id}, from={from_email}")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{PLUSVIBE_BASE}/unibox/emails/save-as-draft",
+            headers=headers,
+            params=params,
+            json=payload,
+        )
+        if response.status_code != 200:
+            log.error(f"PlusVibe save-draft error: {response.status_code} — {response.text}")
+        response.raise_for_status()
+        return response.json()
+
+
 async def get_workspaces() -> dict:
     """Utility: list accessible workspaces (useful for finding workspace_id)."""
     async with httpx.AsyncClient(timeout=15) as client:

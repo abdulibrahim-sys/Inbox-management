@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -10,7 +11,10 @@ load_dotenv()
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from fastapi.responses import JSONResponse
 
-from src.integrations.plusvibe import parse_webhook, send_reply, fetch_latest_email_id
+from src.integrations.plusvibe import (
+    parse_webhook, send_reply, fetch_latest_email_id,
+    get_email_thread, save_draft,
+)
 from src.integrations.slack import (
     verify_slack_signature,
     post_review_message,
@@ -18,6 +22,10 @@ from src.integrations.slack import (
     update_message_approved,
     update_message_edited_sent,
     post_unsubscribe_alert,
+    post_followup_review,
+    open_followup_edit_modal,
+    update_message_draft_saved,
+    update_message_cancelled,
     SLACK_CHANNEL_ID,
 )
 from src.classifier import classify_reply, get_reply_type_meta
@@ -30,15 +38,28 @@ from src.learning import (
     delete_pending,
     get_few_shot_examples,
 )
+from src.followup import (
+    schedule_followups,
+    cancel_followups,
+    get_due_followups,
+    advance_stage,
+    draft_followup,
+    format_thread_context,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+_followup_task: asyncio.Task | None = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _followup_task
     log.info("Inbox Management Agent starting up")
+    _followup_task = asyncio.create_task(_followup_scheduler())
     yield
+    _followup_task.cancel()
     log.info("Inbox Management Agent shutting down")
 
 
@@ -165,7 +186,6 @@ async def _process_reply(payload: dict):
 @app.post("/webhook/slack/actions")
 async def slack_actions(request: Request, background: BackgroundTasks):
     """Handle Slack interactive component payloads (button clicks, modal submissions)."""
-    # Verify signature
     body_bytes = await request.body()
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
@@ -180,33 +200,67 @@ async def slack_actions(request: Request, background: BackgroundTasks):
     if payload_type == "block_actions":
         action = payload["actions"][0]
         action_id = action["action_id"]
-        email_id = action["value"]
+        action_value = action["value"]
         trigger_id = payload.get("trigger_id")
         manager = payload["user"]["name"]
         channel = payload["channel"]["id"]
         message_ts = payload["message"]["ts"]
 
+        # ── Initial reply actions ──
         if action_id == "approve_reply":
-            background.add_task(_handle_approve, email_id, manager, channel, message_ts)
+            background.add_task(_handle_approve, action_value, manager, channel, message_ts)
 
         elif action_id == "deny_edit_reply":
-            pending = get_pending(email_id)
+            pending = get_pending(action_value)
             if pending:
-                open_edit_modal(trigger_id, email_id, pending["ai_draft"])
+                open_edit_modal(trigger_id, action_value, pending["ai_draft"])
+
+        # ── Follow-up actions ──
+        elif action_id == "approve_followup":
+            background.add_task(_handle_followup_approve, action_value, manager, channel, message_ts)
+
+        elif action_id == "deny_edit_followup":
+            data = json.loads(action_value)
+            pending = get_pending(f"followup:{data['lead_email']}:{data['stage']}")
+            if pending:
+                open_followup_edit_modal(trigger_id, data["lead_email"], data["stage"], pending["ai_draft"])
+
+        elif action_id == "cancel_followup":
+            cancel_followups(action_value)
+            update_message_cancelled(channel, message_ts, manager)
 
     elif payload_type == "view_submission":
-        email_id = payload["view"]["private_metadata"]
-        edited_text = (
-            payload["view"]["state"]["values"]
-            .get("edited_response", {})
-            .get("response_text", {})
-            .get("value", "")
-        )
+        callback_id = payload["view"].get("callback_id", "")
         manager = payload["user"]["name"]
-        background.add_task(_handle_edit_send, email_id, edited_text, manager)
+
+        if callback_id == "edit_followup_modal":
+            # Follow-up edit submission
+            meta = json.loads(payload["view"]["private_metadata"])
+            edited_text = (
+                payload["view"]["state"]["values"]
+                .get("edited_followup", {})
+                .get("followup_text", {})
+                .get("value", "")
+            )
+            background.add_task(
+                _handle_followup_edit_approve,
+                meta["lead_email"], meta["stage"], edited_text, manager,
+            )
+        else:
+            # Initial reply edit submission
+            email_id = payload["view"]["private_metadata"]
+            edited_text = (
+                payload["view"]["state"]["values"]
+                .get("edited_response", {})
+                .get("response_text", {})
+                .get("value", "")
+            )
+            background.add_task(_handle_edit_send, email_id, edited_text, manager)
 
     return Response(status_code=200)
 
+
+# ── Initial reply handlers ────────────────────────────────────────────────────
 
 async def _handle_approve(email_id: str, manager: str, channel: str, message_ts: str):
     pending = get_pending(email_id)
@@ -238,6 +292,18 @@ async def _handle_approve(email_id: str, manager: str, channel: str, message_ts:
             manager=manager,
             slack_ts=pending["slack_ts"],
         )
+
+        # Schedule follow-ups after successful send
+        schedule_followups(
+            record_id=email_id,
+            lead_email=reply_data["from_email"],
+            lead_first_name=reply_data.get("first_name") or "",
+            lead_last_name=reply_data.get("last_name") or "",
+            company_name=reply_data.get("company_name") or "",
+            from_email=reply_data["to_email"],
+            subject=reply_data["subject"],
+        )
+
         delete_pending(email_id)
         log.info(f"Approved and sent reply for {email_id} by {manager}")
     except Exception as e:
@@ -276,16 +342,149 @@ async def _handle_edit_send(email_id: str, edited_text: str, manager: str):
             manager=manager,
             slack_ts=message_ts,
         )
+
+        # Schedule follow-ups after successful send
+        schedule_followups(
+            record_id=email_id,
+            lead_email=reply_data["from_email"],
+            lead_first_name=reply_data.get("first_name") or "",
+            lead_last_name=reply_data.get("last_name") or "",
+            company_name=reply_data.get("company_name") or "",
+            from_email=reply_data["to_email"],
+            subject=reply_data["subject"],
+        )
+
         delete_pending(email_id)
         log.info(f"Edited and sent reply for {email_id} by {manager}")
     except Exception as e:
         log.exception(f"Failed to send edited reply: {e}")
 
 
+# ── Follow-up handlers ────────────────────────────────────────────────────────
+
+async def _handle_followup_approve(action_value: str, manager: str, channel: str, message_ts: str):
+    """Approve a follow-up: save as draft in PlusVibe."""
+    data = json.loads(action_value)
+    lead_email = data["lead_email"]
+    stage = data["stage"]
+
+    pending = get_pending(f"followup:{lead_email}:{stage}")
+    if not pending:
+        log.warning(f"No pending follow-up data for {lead_email} stage {stage}")
+        return
+
+    try:
+        await save_draft(
+            parent_message_id=pending["parent_message_id"],
+            from_email=pending["from_email"],
+            subject=pending["subject"],
+            body=pending["ai_draft"],
+        )
+        update_message_draft_saved(channel, message_ts, manager)
+        advance_stage(lead_email)
+        delete_pending(f"followup:{lead_email}:{stage}")
+        log.info(f"Follow-up #{stage} draft saved for {lead_email} by {manager}")
+    except Exception as e:
+        log.exception(f"Failed to save follow-up draft: {e}")
+
+
+async def _handle_followup_edit_approve(lead_email: str, stage: int, edited_text: str, manager: str):
+    """Save an edited follow-up as draft in PlusVibe."""
+    pending = get_pending(f"followup:{lead_email}:{stage}")
+    if not pending:
+        log.warning(f"No pending follow-up data for {lead_email} stage {stage}")
+        return
+
+    try:
+        await save_draft(
+            parent_message_id=pending["parent_message_id"],
+            from_email=pending["from_email"],
+            subject=pending["subject"],
+            body=edited_text,
+        )
+        # Update original Slack message
+        update_message_draft_saved(pending.get("slack_channel", SLACK_CHANNEL_ID), pending["slack_ts"], manager)
+        advance_stage(lead_email)
+        delete_pending(f"followup:{lead_email}:{stage}")
+        log.info(f"Edited follow-up #{stage} draft saved for {lead_email} by {manager}")
+    except Exception as e:
+        log.exception(f"Failed to save edited follow-up draft: {e}")
+
+
+# ── Follow-up scheduler ──────────────────────────────────────────────────────
+
+async def _followup_scheduler():
+    """Background task that checks for due follow-ups every 30 minutes."""
+    log.info("Follow-up scheduler started")
+    while True:
+        try:
+            await asyncio.sleep(30 * 60)  # Check every 30 minutes
+            await _process_due_followups()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.exception(f"Follow-up scheduler error: {e}")
+
+
+async def _process_due_followups():
+    """Check for and process all due follow-ups."""
+    due = await get_due_followups()
+    log.info(f"Follow-up check: {len(due)} due")
+
+    for item in due:
+        try:
+            lead_email = item["lead_email"]
+            stage = item["due_stage"]
+
+            # Fetch email thread for context
+            thread = await get_email_thread(lead_email)
+            thread_context = format_thread_context(thread)
+
+            # Find the parent message_id (most recent email in thread)
+            parent_message_id = ""
+            if thread:
+                parent_message_id = thread[0].get("message_id") or thread[0].get("id") or ""
+
+            # Draft the follow-up
+            draft = await draft_followup(
+                stage=stage,
+                first_name=item["first_name"],
+                company_name=item["company_name"],
+                thread_context=thread_context,
+            )
+            log.info(f"Follow-up #{stage} drafted for {lead_email} ({len(draft)} chars)")
+
+            # Post to Slack for review
+            slack_ts = post_followup_review(
+                lead_email=lead_email,
+                first_name=item["first_name"],
+                last_name=item["last_name"],
+                company_name=item["company_name"],
+                stage=stage,
+                draft_followup=draft,
+                thread_summary=thread_context[:800],
+            )
+
+            # Store pending follow-up for approval
+            store_pending(f"followup:{lead_email}:{stage}", {
+                "lead_email": lead_email,
+                "stage": stage,
+                "from_email": item["from_email"],
+                "subject": item["subject"],
+                "parent_message_id": parent_message_id,
+                "ai_draft": draft,
+                "slack_ts": slack_ts,
+                "slack_channel": SLACK_CHANNEL_ID,
+            })
+
+        except Exception as e:
+            log.exception(f"Failed to process follow-up for {item.get('lead_email')}: {e}")
+
+
 # ── Admin utilities ────────────────────────────────────────────────────────────
 
 @app.get("/admin/workspaces")
-async def get_workspaces():
+async def admin_get_workspaces():
     """Utility endpoint to discover your PlusVibe workspace ID."""
     from src.integrations.plusvibe import get_workspaces
     data = await get_workspaces()
@@ -293,7 +492,7 @@ async def get_workspaces():
 
 
 @app.post("/admin/register-webhook")
-async def register_webhook(request: Request):
+async def admin_register_webhook(request: Request):
     """Register this server's URL as a PlusVibe webhook."""
     from src.integrations.plusvibe import register_webhook
     body = await request.json()
@@ -302,3 +501,10 @@ async def register_webhook(request: Request):
         return JSONResponse({"error": "url required"}, status_code=400)
     result = await register_webhook(f"{railway_url}/webhook/plusvibe")
     return result
+
+
+@app.post("/admin/check-followups")
+async def admin_check_followups(background: BackgroundTasks):
+    """Manually trigger a follow-up check (for testing)."""
+    background.add_task(_process_due_followups)
+    return {"status": "triggered"}
