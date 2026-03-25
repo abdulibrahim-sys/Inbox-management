@@ -7,6 +7,7 @@ import anthropic
 
 _client: anthropic.AsyncAnthropic | None = None
 _templates: dict | None = None
+_case_studies: dict | None = None
 
 CALENDLY = "https://calendly.com/trendfeed-media/free-email-marketing"
 AGENCY = "Trendfeed"
@@ -27,6 +28,34 @@ def _load_templates() -> dict:
         path = Path(__file__).parent.parent / "data" / "templates.json"
         _templates = json.loads(path.read_text())
     return _templates
+
+
+def _load_case_studies() -> dict:
+    global _case_studies
+    if _case_studies is None:
+        path = Path(__file__).parent.parent / "data" / "case_studies.json"
+        _case_studies = json.loads(path.read_text())
+    return _case_studies
+
+
+def get_case_study_lines(category: str = "other", limit: int = 2) -> str:
+    """
+    Return 1-2 line case study references matched to the prospect's category.
+    Falls back to aggregate stats if no category match.
+    """
+    data = _load_case_studies()
+    studies = data.get("case_studies", [])
+
+    # Try category match first
+    matched = [s for s in studies if s["category"] == category]
+    if not matched:
+        # Fall back to any two strong results
+        matched = studies[:limit]
+
+    lines = [s["one_liner"] for s in matched[:limit]]
+    if not lines:
+        return data["aggregate_stats"]["one_liner"]
+    return " ".join(lines)
 
 
 async def draft_response(
@@ -97,8 +126,12 @@ HARD RULES:
 - Always use their first name in the opening line
 - Always mention {company_name} at least once
 - End every email with: {CALENDLY}
-- Never fabricate specific numbers, percentages, or client results
+- You may reference real case study results provided below, but keep it to one brief mention (1-2 sentences max)
+- Never fabricate numbers beyond what is provided in the case studies
 - Never mention competitors"""
+
+    # Get case study proof points
+    case_study_lines = get_case_study_lines(category)
 
     user_prompt = f"""Write a reply to {first_name} at {company_name}.
 
@@ -109,7 +142,10 @@ How to handle this ({reply_type}):
 {type_meta['template_hint']}
 
 Client references (only use if relevant):
-{ref_line}{few_shot_block}
+{ref_line}
+
+Real results you can reference (use sparingly, 1-2 sentences max):
+{case_study_lines}{few_shot_block}
 
 Output the email body only. Plain text. No subject line. No markdown."""
 

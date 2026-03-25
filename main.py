@@ -302,6 +302,7 @@ async def _handle_approve(email_id: str, manager: str, channel: str, message_ts:
             company_name=reply_data.get("company_name") or "",
             from_email=reply_data["to_email"],
             subject=reply_data["subject"],
+            category=pending.get("category", "other"),
         )
 
         delete_pending(email_id)
@@ -352,6 +353,7 @@ async def _handle_edit_send(email_id: str, edited_text: str, manager: str):
             company_name=reply_data.get("company_name") or "",
             from_email=reply_data["to_email"],
             subject=reply_data["subject"],
+            category=pending.get("category", "other"),
         )
 
         delete_pending(email_id)
@@ -451,6 +453,7 @@ async def _process_due_followups():
                 first_name=item["first_name"],
                 company_name=item["company_name"],
                 thread_context=thread_context,
+                category=item.get("category", "other"),
             )
             log.info(f"Follow-up #{stage} drafted for {lead_email} ({len(draft)} chars)")
 

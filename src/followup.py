@@ -21,6 +21,7 @@ from src.integrations.plusvibe import (
     save_draft,
     _strip_html,
 )
+from src.drafter import get_case_study_lines
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ def schedule_followups(
     company_name: str,
     from_email: str,
     subject: str,
+    category: str = "other",
 ) -> None:
     """Schedule follow-up checks after sending the initial reply."""
     r = _get_redis()
@@ -78,6 +80,7 @@ def schedule_followups(
         "company_name": company_name,
         "from_email": from_email,
         "subject": subject,
+        "category": category,
         "initial_reply_at": now,
         "next_stage": 1,
         "cancelled": False,
@@ -172,6 +175,7 @@ async def draft_followup(
     first_name: str,
     company_name: str,
     thread_context: str,
+    category: str = "other",
 ) -> str:
     """
     Draft a follow-up email using Alex Hormozi's cold email follow-up principles.
@@ -225,7 +229,13 @@ HARD RULES:
 - Use their first name in the opening
 - Mention their company at least once
 - End with the Calendly link: {CALENDLY}
-- Never fabricate specific numbers or client results"""
+- You may reference real case study results provided, but keep it to 1-2 sentences max
+- Never fabricate numbers beyond what is provided"""
+
+    # Get case study proof points (especially useful for Stage 2)
+    case_study_ref = ""
+    if stage == 2:
+        case_study_ref = f"\n\nReal results you can reference (use 1-2 sentences, pick the most relevant):\n{get_case_study_lines(category)}"
 
     user_prompt = f"""Write a follow-up email to {first_name} at {company_name}.
 
@@ -234,7 +244,7 @@ HARD RULES:
 Here is the email thread so far (most recent first):
 \"\"\"
 {thread_context[:3000]}
-\"\"\"
+\"\"\"{case_study_ref}
 
 Output the email body only. Plain text. No subject line. No markdown."""
 

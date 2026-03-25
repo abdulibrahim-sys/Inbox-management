@@ -1,0 +1,75 @@
+{
+  "case_studies": [
+    {
+      "client": "Happy Head",
+      "category": "cosmetics",
+      "one_liner": "Happy Head tripled their email revenue from $122K to $436K in just 30 days.",
+      "detail": "Email went from 15% to 33% of total revenue while the store grew 60% to $1.3M."
+    },
+    {
+      "client": "Oxygenetix",
+      "category": "skincare",
+      "one_liner": "Oxygenetix saw a 136% jump in email revenue in their first 30 days with us.",
+      "detail": "Email revenue went from $24.5K to $58K, climbing from 19% to 44% of total store revenue."
+    },
+    {
+      "client": "Dermazen",
+      "category": "skincare",
+      "one_liner": "We added $33K in email revenue for Dermazen in 30 days, a 37% increase.",
+      "detail": "Rebuilt flow triggers with strategic bundles based on skin type. Flow revenue nearly doubled."
+    },
+    {
+      "client": "Dream Frames",
+      "category": "other",
+      "one_liner": "Dream Frames went from 2% to 17% email attribution with 999% email revenue growth in 90 days.",
+      "detail": "Total store revenue grew 322% to $857K. We built their entire retention system from scratch."
+    },
+    {
+      "client": "Frownies",
+      "category": "skincare",
+      "one_liner": "Frownies grew email revenue from $258K to $929K in 90 days, a 260% increase.",
+      "detail": "That is an additional $671K in email revenue. Their CEO said we increased revenue by $202K in just 60 days."
+    },
+    {
+      "client": "KaraMD",
+      "category": "supplements",
+      "one_liner": "KaraMD added $80K per month in email revenue within 60 days, an 86% increase.",
+      "detail": "Flows went from earning $900 a month to $30,000 a month in the first 30 days alone."
+    },
+    {
+      "client": "Drowsy Sleep Co",
+      "category": "clothing",
+      "one_liner": "Drowsy Sleep saw a 52% increase in Klaviyo attributed revenue in the first 30 days.",
+      "detail": "Flow revenue grew from £25K to £35K and campaign revenue from £16K to £28K per month."
+    },
+    {
+      "client": "Kim'C Market",
+      "category": "food",
+      "one_liner": "Kim'C Market grew email sales from $4.5K to $18K per month in 30 days, then to $34K.",
+      "detail": "Nearly 4X growth in the first month, then almost doubled again after that."
+    },
+    {
+      "client": "Walden Farms",
+      "category": "food",
+      "one_liner": "Walden Farms went from 2% to 20% email attributed revenue in their first 30 days with us.",
+      "detail": "Strong bump in returning customer rate and conversion rate alongside the email growth."
+    },
+    {
+      "client": "Focalserve",
+      "category": "other",
+      "one_liner": "Focalserve achieved a 4.5X return on investment in 90 days with 45% of turnover from email.",
+      "detail": "Previous social media agency failed to deliver. Our retention system outperformed all other channels."
+    }
+  ],
+  "aggregate_stats": {
+    "one_liner": "Across 150+ brands we average 256% email revenue growth, 89% retention rate, 45% repeat purchase rate, and over $100M in revenue generated.",
+    "details": {
+      "email_growth": "256% average email revenue growth in the first 90 days",
+      "attribution": "Email contributes roughly 1/3 of total revenue within 90 days on average",
+      "repeat_rate": "45% repeat purchase rate on average (2x customers coming back)",
+      "retention_rate": "89% client retention rate",
+      "satisfaction": "91% client satisfaction rate",
+      "roi": "4X average ROI"
+    }
+  }
+}
