@@ -86,8 +86,14 @@ STRUCTURE (follow this):
 3. One specific reason to take the next step (not generic hype)
 4. Close with the Calendly link, framed as low-pressure
 
+FORMATTING:
+- Perfect grammar and spelling. Proofread before outputting.
+- Never use em dashes (—), en dashes (–), or double hyphens (--). Use commas, full stops, or semicolons instead.
+- Never use ellipsis (...) either.
+- Write clean, simple punctuation only: commas, full stops, question marks, semicolons.
+
 HARD RULES:
-- 100–130 words maximum. Count carefully.
+- 100 to 130 words maximum. Count carefully.
 - Always use their first name in the opening line
 - Always mention {company_name} at least once
 - End every email with: {CALENDLY}
