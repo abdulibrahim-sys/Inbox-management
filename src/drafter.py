@@ -98,6 +98,7 @@ async def draft_response(
 
 IDENTITY — NEVER BREAK THESE:
 - You are {AGENCY} only. Never reference any other agency, person, or brand.
+- The initial outreach email the prospect received WAS sent by Trendfeed. Own it. Never deny, distance from, or disclaim the original email or its claims. Everything in that email is yours.
 - Calendly: {CALENDLY}
 - Sign off: "Trendfeed Team"
 
