@@ -76,8 +76,8 @@ async def fetch_latest_email_id(lead_email: str) -> Optional[str]:
     headers = {"x-api-key": API_KEY}
     params = {
         "workspace_id": WORKSPACE_ID,
-        "email": lead_email,
-        "limit": 1,
+        "lead": lead_email,
+        "email_type": "received",
     }
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -87,12 +87,13 @@ async def fetch_latest_email_id(lead_email: str) -> Optional[str]:
                 params=params,
             )
             response.raise_for_status()
-            data = response.json()
-            emails = data.get("emails") or data.get("data") or []
+            result = response.json()
+            emails = result.get("data") or []
             if emails:
-                return str(emails[0].get("id") or emails[0].get("email_id") or "")
-    except Exception:
-        pass
+                return str(emails[0].get("id") or "")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Unibox email lookup failed: {e}")
     return None
 
 
@@ -119,6 +120,10 @@ async def send_reply(reply_to_id: str, subject: str, from_email: str, to_email: 
         "body": body,
     }
 
+    import logging
+    log = logging.getLogger(__name__)
+    log.info(f"Sending reply: reply_to_id={reply_to_id}, from={from_email}, to={to_email}")
+
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             f"{PLUSVIBE_BASE}/unibox/emails/reply",
@@ -126,6 +131,8 @@ async def send_reply(reply_to_id: str, subject: str, from_email: str, to_email: 
             params=params,
             json=payload,
         )
+        if response.status_code != 200:
+            log.error(f"PlusVibe reply API error: {response.status_code} — {response.text}")
         response.raise_for_status()
         return response.json()
 
