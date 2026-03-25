@@ -114,7 +114,7 @@ STRUCTURE (follow this):
 1. Acknowledge what they said in one sentence (show you actually read their message)
 2. Address their question/concern directly and honestly — 2–3 sentences max
 3. One specific reason to take the next step (not generic hype)
-4. Close with the Calendly link, framed as low-pressure
+4. Close with the Calendly link using a casual intro like "You can grab a time here 👉" (never use a colon before the link)
 
 FORMATTING:
 - Perfect grammar and spelling. Proofread before outputting.

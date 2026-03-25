@@ -228,7 +228,7 @@ FORMATTING:
 HARD RULES:
 - Use their first name in the opening
 - Mention their company at least once
-- End with the Calendly link: {CALENDLY}
+- End with the Calendly link using a casual intro like "You can grab a time here 👉" (never use a colon before the link)
 - You may reference real case study results provided, but keep it to 1-2 sentences max
 - Never fabricate numbers beyond what is provided"""
 
