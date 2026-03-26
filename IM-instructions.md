@@ -64,7 +64,7 @@ No pre-defined deck because services are bespoke. Call will provide tailored ana
 Flag for manual handling in Slack. Draft a warm intro email to the referred person.
 
 ### Niche/industry experience — REQUIRES WEBSITE LOOKUP
-**Before drafting:** scrape prospect's website, classify their category, then pick 2–3 matching Trendfeed clients. See Client Portfolio below. If no exact match, reference "40+ brands across a dozen industries."
+**Before drafting:** scrape prospect's website, classify their category, then pick 2–3 matching Trendfeed clients. See Client Portfolio below. If no exact match, reference "150+ brands across a dozen industries."
 
 ### What makes you different
 Boutique, results-driven, scale vertically not horizontally. Max 15–20 clients. Strict vetting. Zero pressure. Money-back guarantee.
@@ -82,7 +82,7 @@ Empathise. Bringing in the wrong client hurts Trendfeed too. Initial call determ
 Full money-back guarantee. Also open to pure performance on a case-by-case basis. Need to analyse their situation first.
 
 ### Already have an agency / doing email
-Congrats on existing work. Experience with 40+ partners shows there's always room to grow. Brief chat → free audit doc → useful tips either way.
+Congrats on existing work. Experience with 150+ partners shows there's always room to grow. Brief chat → free audit doc → useful tips either way.
 
 ### Send examples / references
 Happy to share after confirming mutual fit on a brief call. Won't bother existing clients for references before that.
@@ -91,7 +91,7 @@ Happy to share after confirming mutual fit on a brief call. Won't bother existin
 Politely redirect to Calendly. The form collects context + triggers prep automations.
 
 ### Don't want to pay / free trial
-Empathise but Trendfeed is a business with expenses. After working with 40+ 7 & 8 figure clients, Trendfeed knows what it can deliver.
+Empathise but Trendfeed is a business with expenses. After working with 150+ 7 & 8 figure clients, Trendfeed knows what it can deliver.
 
 ### Revenue qualification
 Below $20K/month → politely decline. $20K–$50K → proceed if potential is visible. Above $50K → standard qualification.
@@ -119,7 +119,7 @@ Reference ONLY clients from https://trendfeed.co.uk:
 | Clothing | Drowsy Sleep Co |
 | Body Care | Earthly Body |
 | Tech/Accessories | Rolling Square |
-| Other | Reference cross-industry experience with 40+ brands |
+| Other | Reference cross-industry experience with 150+ brands |
 
 When prospect is in a category with listed clients, name 2–3 from same or adjacent category. Example: skincare prospect → mention Frownies, Dermazen, and Oxygenetix.
 
