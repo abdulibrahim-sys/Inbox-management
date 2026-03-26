@@ -60,7 +60,7 @@
     "existing_agency": {
       "description": "Prospect already has an email agency or is doing email marketing themselves",
       "keywords": ["already have", "current agency", "working with", "in-house", "already doing", "have someone"],
-      "template_hint": "Congrats on existing work. Experience with 40+ partners shows there's always room to grow. Brief chat → free audit doc → useful tips either way."
+      "template_hint": "Congrats on existing work. Experience with 150+ partners shows there's always room to grow. Brief chat → free audit doc → useful tips either way."
     },
     "send_examples": {
       "description": "Prospect asks to see examples of work or client references",
@@ -75,7 +75,7 @@
     "free_trial": {
       "description": "Prospect asks for a free trial or doesn't want to pay",
       "keywords": ["free trial", "trial", "don't want to pay", "not paying", "free", "pro bono", "without paying"],
-      "template_hint": "Empathise but Trendfeed is a business with expenses. After working with 40+ 7 & 8 figure clients, Trendfeed knows what it can deliver."
+      "template_hint": "Empathise but Trendfeed is a business with expenses. After working with 150+ 7 & 8 figure clients, Trendfeed knows what it can deliver."
     },
     "auto_reply": {
       "description": "Auto-reply or out of office message",

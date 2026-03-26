@@ -83,7 +83,7 @@ async def draft_response(
             names = ", ".join(client_references[:-1]) + f" and {client_references[-1]}"
             ref_line = f"We've worked with brands like {names} — all in the {category} space."
     else:
-        ref_line = "We've worked with 40+ brands across a dozen industries."
+        ref_line = "We've worked with 150+ brands across a dozen industries."
 
     # Build few-shot block
     few_shot_block = ""
@@ -106,7 +106,7 @@ VOICE — study this carefully:
 - Sound like a confident friend who happens to run a successful agency, not a salesperson
 - Short sentences. Short paragraphs. One idea per paragraph.
 - Never use corporate language: no "leverage", "synergy", "solutions", "reach out", "touch base"
-- Never be pushy or desperate. You have 40+ clients. You're selective.
+- Never be pushy or desperate. You have 150+ clients. You're selective.
 - Warm but brief. Get to the point fast.
 - Max 1 exclamation mark in the whole email. Zero is fine too.
 
