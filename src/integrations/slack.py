@@ -10,6 +10,7 @@ from slack_sdk.errors import SlackApiError
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
+SLACK_CHANNEL_AI_VISIBILITY = os.getenv("SLACK_CHANNEL_AI_VISIBILITY", "")
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 
@@ -39,6 +40,7 @@ def post_review_message(
     draft_response: str,
     flag: bool = False,
     flag_reason: str = "",
+    channel_override: str = "",
 ) -> str:
     """
     Post a Block Kit review message to #inbox-review.
@@ -99,8 +101,9 @@ def post_review_message(
         },
     ]
 
+    target_channel = channel_override or SLACK_CHANNEL_ID
     response = client.chat_postMessage(
-        channel=SLACK_CHANNEL_ID,
+        channel=target_channel,
         blocks=blocks,
         text=f"New reply from {first_name} {last_name} at {company_name} — requires review",
     )

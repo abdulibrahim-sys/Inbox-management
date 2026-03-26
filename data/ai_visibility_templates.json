@@ -1,0 +1,96 @@
+{
+  "reply_types": {
+    "pricing": {
+      "description": "Prospect asks about pricing, cost, or rates for AI visibility",
+      "keywords": ["price", "pricing", "cost", "rates", "how much", "fee", "charge", "budget", "investment"],
+      "template_hint": "Pricing depends on the brand's category, competition, and number of AI platforms targeted. The free strategy call gives them a custom roadmap and pricing. Also mention the $5.99 AI audit as a low-commitment starting point."
+    },
+    "services": {
+      "description": "Prospect asks what AI visibility services are offered or how it works",
+      "keywords": ["services", "what do you do", "what do you offer", "what exactly", "how does it work", "how it works"],
+      "template_hint": "We get e-commerce brands recommended by AI search engines (Google AI Overviews, ChatGPT Shopping, Gemini, Perplexity, Copilot, Claude). 4-step system: Audit, Strategy, Execute, Scale. Call to determine exact fit for their brand."
+    },
+    "case_studies": {
+      "description": "Prospect asks for proof, case studies, or results",
+      "keywords": ["case study", "case studies", "proof", "results", "examples", "portfolio", "show me", "evidence"],
+      "template_hint": "Reference The Lip Bar case study (zero to 3-platform AI visibility in 90 days). Offer to walk through their specific category on the strategy call."
+    },
+    "what_is_ai_search": {
+      "description": "Prospect asks what AI search is, why it matters, or seems confused about the concept",
+      "keywords": ["what is ai search", "ai search", "don't understand", "what do you mean", "how does ai", "chatgpt shopping", "ai overviews"],
+      "template_hint": "Explain simply: when people ask ChatGPT or Google AI 'what's the best X', AI names specific brands instead of showing links. If they're not showing up, their competitors are. The strategy call includes a free audit showing exactly where they stand."
+    },
+    "already_doing_seo": {
+      "description": "Prospect says they already do SEO or have an SEO agency",
+      "keywords": ["already do seo", "seo agency", "doing seo", "have seo", "organic traffic", "rankings"],
+      "template_hint": "AI search is different from traditional SEO. SEO targets keywords and page rankings. AI visibility targets prompts and brand recommendations. Most SEO agencies don't cover this. The two work together but require different strategies."
+    },
+    "skeptical": {
+      "description": "Prospect is skeptical about AI search mattering or being real",
+      "keywords": ["doesn't work", "not real", "too early", "waste", "scam", "not proven", "hype", "fad"],
+      "template_hint": "ChatGPT has 100M+ weekly users, Google AI Overviews appear in most searches. This is already happening. The brands that start first build a moat (compound effect: winning one prompt makes you more likely to be cited for related ones). Strategy call includes a free audit so they can see for themselves."
+    },
+    "referral": {
+      "description": "Prospect refers to another contact or person",
+      "keywords": ["speak to", "talk to", "contact", "colleague", "manager", "boss", "forward", "cc"],
+      "template_hint": "FLAG FOR MANUAL HANDLING. Draft a warm intro email to the referred person.",
+      "flag": true
+    },
+    "niche_experience": {
+      "description": "Prospect asks about experience in their niche or industry",
+      "keywords": ["industry", "niche", "experience with", "worked with", "clients in", "familiar with", "space"],
+      "template_hint": "We work specifically with e-commerce brands. Reference The Lip Bar (DTC Beauty) as proof. AI visibility works across any e-commerce category because AI recommends products in every niche."
+    },
+    "differentiation": {
+      "description": "Prospect asks what makes Featured in AI different",
+      "keywords": ["different", "stand out", "why you", "what makes", "unique", "better than", "compared to"],
+      "template_hint": "Specialist agency focused only on AI search visibility for e-commerce. Not an SEO add-on. We monitor 6 AI platforms, track 24 prompt categories, and build the structured authority that makes AI trust and cite your brand."
+    },
+    "source": {
+      "description": "Prospect asks where you got their email or how you found them",
+      "keywords": ["where did you get", "how did you find", "who gave you", "found my email"],
+      "template_hint": "Keep it light. 'We came across your brand and saw potential for AI search visibility.' Pivot to value. NOTE: if they say unsubscribe/remove, classify as unsubscribe instead."
+    },
+    "interested": {
+      "description": "Prospect is interested, wants to proceed, or asks to book a call",
+      "keywords": ["interested", "sounds good", "tell me more", "let's chat", "book a call", "when are you free"],
+      "template_hint": "Warm response confirming the call. Direct to Calendly link."
+    },
+    "audit_interest": {
+      "description": "Prospect is interested in the $5.99 audit specifically",
+      "keywords": ["audit", "$5.99", "5.99", "just the audit", "visibility scan", "try the audit"],
+      "template_hint": "Great choice. The audit covers 6+ AI platforms, real customer queries, competitor comparison, and AI sentiment analysis. Delivered within 48 business hours. Direct them to featuredinai.com to grab it."
+    },
+    "existing_agency": {
+      "description": "Prospect already has a marketing agency or is doing marketing themselves",
+      "keywords": ["already have", "current agency", "working with", "in-house", "already doing", "have someone"],
+      "template_hint": "AI visibility is a separate channel from what their current agency handles. Most agencies don't cover AI search. This works alongside existing marketing, not instead of it."
+    },
+    "auto_reply": {
+      "description": "Auto-reply or out of office message",
+      "keywords": ["out of office", "ooo", "automatic reply", "auto-reply", "away from", "on vacation", "on leave"],
+      "template_hint": "IGNORE. Do not draft. Log as Auto-reply.",
+      "no_draft": true
+    },
+    "unsubscribe": {
+      "description": "Prospect wants to unsubscribe or be removed from the list",
+      "keywords": ["unsubscribe", "remove me", "stop emailing", "opt out", "do not contact", "take me off"],
+      "template_hint": "DO NOT DRAFT. Flag in Slack immediately. Process unsubscribe in PlusVibe.",
+      "no_draft": true,
+      "flag": true,
+      "urgent": true
+    },
+    "hostile": {
+      "description": "Prospect is rude, angry, or aggressive",
+      "keywords": ["scam", "spam", "fraud", "lawsuit", "legal action", "report you", "angry"],
+      "template_hint": "Draft a brief polite close-out. Flag for manager.",
+      "flag": true
+    },
+    "uncategorised": {
+      "description": "Reply doesn't fit any known category",
+      "keywords": [],
+      "template_hint": "Draft best-effort response. Flag as Uncategorised for manager + potential new template.",
+      "flag": true
+    }
+  }
+}

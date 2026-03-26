@@ -27,6 +27,7 @@ from src.integrations.slack import (
     update_message_draft_saved,
     update_message_cancelled,
     SLACK_CHANNEL_ID,
+    SLACK_CHANNEL_AI_VISIBILITY,
 )
 from src.classifier import classify_reply, get_reply_type_meta
 from src.drafter import draft_response, compute_diff
@@ -46,6 +47,18 @@ from src.followup import (
     draft_followup,
     format_thread_context,
 )
+
+# AI Visibility campaign modules
+from src.ai_visibility_classifier import (
+    classify_reply as aiv_classify_reply,
+    get_reply_type_meta as aiv_get_reply_type_meta,
+)
+from src.ai_visibility_drafter import (
+    draft_response as aiv_draft_response,
+)
+
+# Campaign name patterns for routing
+AI_VISIBILITY_CAMPAIGNS = {"ai search visibility", "aeo", "featured in ai"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -84,10 +97,20 @@ async def plusvibe_webhook(request: Request, background: BackgroundTasks):
     return JSONResponse({"status": "received"}, status_code=200)
 
 
+def _is_ai_visibility_campaign(payload: dict) -> bool:
+    """Check if the webhook payload belongs to an AI Search Visibility campaign."""
+    data = payload.get("data", payload)
+    campaign_name = (data.get("campaign_name") or "").lower().strip()
+    return any(keyword in campaign_name for keyword in AI_VISIBILITY_CAMPAIGNS)
+
+
 async def _process_reply(payload: dict):
     try:
         reply = parse_webhook(payload)
-        log.info(f"Processing reply from {reply.from_email} ({reply.company_name})")
+        is_aiv = _is_ai_visibility_campaign(payload)
+        campaign_label = "AI Visibility" if is_aiv else "Email Marketing"
+        target_channel = SLACK_CHANNEL_AI_VISIBILITY if is_aiv else SLACK_CHANNEL_ID
+        log.info(f"[{campaign_label}] Processing reply from {reply.from_email} ({reply.company_name})")
 
         # 1. Resolve email_id if not in webhook payload (needed to send reply)
         if not reply.email_id and reply.from_email:
@@ -100,11 +123,16 @@ async def _process_reply(payload: dict):
             log.error("No identifier available for this reply, skipping")
             return
 
-        # 2. Classify
-        classification = await classify_reply(reply.body, reply.subject)
-        reply_type = classification["reply_type"]
-        meta = get_reply_type_meta(reply_type)
-        log.info(f"Classified as: {reply_type} (confidence: {classification['confidence']})")
+        # 2. Classify (use campaign-specific classifier)
+        if is_aiv:
+            classification = await aiv_classify_reply(reply.body, reply.subject)
+            reply_type = classification["reply_type"]
+            meta = aiv_get_reply_type_meta(reply_type)
+        else:
+            classification = await classify_reply(reply.body, reply.subject)
+            reply_type = classification["reply_type"]
+            meta = get_reply_type_meta(reply_type)
+        log.info(f"[{campaign_label}] Classified as: {reply_type} (confidence: {classification['confidence']})")
 
         # 3. Handle no-draft types immediately
         if meta.get("no_draft"):
@@ -119,30 +147,41 @@ async def _process_reply(payload: dict):
                 log.info(f"Skipping draft for reply type: {reply_type}")
             return
 
-        # 4. Scrape website if needed
+        # 4. Scrape website if needed (email marketing only)
         category = "other"
         client_refs = []
-        if meta.get("requires_scrape") or reply_type == "niche_experience":
+        if not is_aiv and (meta.get("requires_scrape") or reply_type == "niche_experience"):
             category, client_refs = await scrape_and_classify(reply.website or "")
             log.info(f"Scraped category: {category}, clients: {client_refs}")
 
         # 5. Get few-shot examples
-        few_shots = get_few_shot_examples(reply_type)
+        few_shot_key = f"aiv:{reply_type}" if is_aiv else reply_type
+        few_shots = get_few_shot_examples(few_shot_key)
 
-        # 6. Draft response
-        draft = await draft_response(
-            reply_type=reply_type,
-            first_name=reply.first_name or "there",
-            last_name=reply.last_name or "",
-            company_name=reply.company_name or "your company",
-            original_message=reply.body,
-            category=category,
-            client_references=client_refs,
-            few_shot_examples=few_shots,
-        )
-        log.info(f"Draft created ({len(draft)} chars)")
+        # 6. Draft response (use campaign-specific drafter)
+        if is_aiv:
+            draft = await aiv_draft_response(
+                reply_type=reply_type,
+                first_name=reply.first_name or "there",
+                last_name=reply.last_name or "",
+                company_name=reply.company_name or "your company",
+                original_message=reply.body,
+                few_shot_examples=few_shots,
+            )
+        else:
+            draft = await draft_response(
+                reply_type=reply_type,
+                first_name=reply.first_name or "there",
+                last_name=reply.last_name or "",
+                company_name=reply.company_name or "your company",
+                original_message=reply.body,
+                category=category,
+                client_references=client_refs,
+                few_shot_examples=few_shots,
+            )
+        log.info(f"[{campaign_label}] Draft created ({len(draft)} chars)")
 
-        # 7. Post to Slack for review
+        # 7. Post to Slack for review (campaign-specific channel)
         flag = meta.get("flag", False)
         flag_reason = ""
         if reply_type == "referral":
@@ -164,17 +203,19 @@ async def _process_reply(payload: dict):
             draft_response=draft,
             flag=flag,
             flag_reason=flag_reason,
+            channel_override=target_channel,
         )
-        log.info(f"Posted to Slack: ts={slack_ts}")
+        log.info(f"[{campaign_label}] Posted to Slack: ts={slack_ts}")
 
         # 8. Store pending state for when manager approves
         store_pending(record_id, {
             "reply": reply.model_dump(),
             "reply_type": reply_type,
             "category": category,
+            "campaign": "ai_visibility" if is_aiv else "email_marketing",
             "ai_draft": draft,
             "slack_ts": slack_ts,
-            "slack_channel": SLACK_CHANNEL_ID,
+            "slack_channel": target_channel,
         })
 
     except Exception as e:
@@ -280,12 +321,15 @@ async def _handle_approve(email_id: str, manager: str, channel: str, message_ts:
             body=draft,
         )
         update_message_approved(channel, message_ts, manager)
+        # Namespace few-shot keys by campaign
+        is_aiv = pending.get("campaign") == "ai_visibility"
+        log_reply_type = f"aiv:{pending['reply_type']}" if is_aiv else pending["reply_type"]
         log_interaction(
             email_id=email_id,
             prospect_email=reply_data["from_email"],
             prospect_company=reply_data.get("company_name", ""),
             prospect_category=pending.get("category", "other"),
-            reply_type=pending["reply_type"],
+            reply_type=log_reply_type,
             ai_draft=draft,
             final_sent=draft,
             was_edited=False,
@@ -331,12 +375,14 @@ async def _handle_edit_send(email_id: str, edited_text: str, manager: str):
             body=edited_text,
         )
         update_message_edited_sent(channel, message_ts, manager)
+        is_aiv = pending.get("campaign") == "ai_visibility"
+        log_reply_type = f"aiv:{pending['reply_type']}" if is_aiv else pending["reply_type"]
         log_interaction(
             email_id=email_id,
             prospect_email=reply_data["from_email"],
             prospect_company=reply_data.get("company_name", ""),
             prospect_category=pending.get("category", "other"),
-            reply_type=pending["reply_type"],
+            reply_type=log_reply_type,
             ai_draft=draft,
             final_sent=edited_text,
             was_edited=True,

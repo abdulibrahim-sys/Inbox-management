@@ -1,0 +1,23 @@
+{
+  "case_studies": [
+    {
+      "client": "The Lip Bar",
+      "category": "beauty",
+      "one_liner": "The Lip Bar went from zero AI mentions to showing up across ChatGPT, Google AI Overviews, and Gemini for high-intent beauty queries in 90 days.",
+      "detail": "12 purchase-intent prompts, 6 brand-vs-brand prompts, 3 AI platforms with consistent mentions."
+    }
+  ],
+  "compound_growth": {
+    "month_1": "3 prompts",
+    "month_3": "8 prompts",
+    "month_6": "18 prompts",
+    "month_12": "47 prompts",
+    "note": "Prompts where your brand is recommended by AI. Results based on US market."
+  },
+  "aggregate_stats": {
+    "one_liner": "Brands that start early build a compounding moat: 3 prompts in month 1, 8 by month 3, 18 by month 6, and 47 by month 12.",
+    "platforms_monitored": 6,
+    "prompt_categories_tracked": 24,
+    "avg_time_to_results": "90 days"
+  }
+}
