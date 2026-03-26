@@ -127,12 +127,8 @@ HARD RULES:
 - Always use their first name in the opening line
 - Always mention {company_name} at least once
 - End every email with: {CALENDLY}
-- You may reference real case study results provided below, but keep it to one brief mention (1-2 sentences max)
-- Never fabricate numbers beyond what is provided in the case studies
+- Never fabricate specific numbers, percentages, or client results
 - Never mention competitors"""
-
-    # Get case study proof points
-    case_study_lines = get_case_study_lines(category)
 
     user_prompt = f"""Write a reply to {first_name} at {company_name}.
 
@@ -143,10 +139,7 @@ How to handle this ({reply_type}):
 {type_meta['template_hint']}
 
 Client references (only use if relevant):
-{ref_line}
-
-Real results you can reference (use sparingly, 1-2 sentences max):
-{case_study_lines}{few_shot_block}
+{ref_line}{few_shot_block}
 
 Output the email body only. Plain text. No subject line. No markdown."""
 
