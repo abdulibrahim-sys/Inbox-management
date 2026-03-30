@@ -15,7 +15,7 @@ from src.integrations.plusvibe import (
     parse_webhook, send_reply, fetch_latest_email_id,
     get_email_thread, save_draft,
 )
-from src.integrations.beehiiv import subscribe_to_newsletter
+from src.integrations.beehiiv import subscribe_to_newsletter, process_retry_queue
 from src.integrations.slack import (
     verify_slack_signature,
     post_review_message,
@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI):
     global _followup_task
     log.info("Inbox Management Agent starting up")
     _followup_task = asyncio.create_task(_followup_scheduler())
+    asyncio.create_task(_beehiiv_retry_scheduler())
     yield
     _followup_task.cancel()
     log.info("Inbox Management Agent shutting down")
@@ -539,6 +540,25 @@ async def _process_due_followups():
             log.exception(f"Failed to process follow-up for {item.get('lead_email')}: {e}")
 
 
+# ── Beehiiv retry scheduler ───────────────────────────────────────────────────
+
+async def _beehiiv_retry_scheduler():
+    """Background task that retries failed Beehiiv subscriptions every 24 hours."""
+    log.info("Beehiiv retry scheduler started")
+    while True:
+        try:
+            await asyncio.sleep(24 * 60 * 60)
+            counts = await process_retry_queue()
+            log.info(
+                f"Beehiiv daily retry: {counts['retried']} retried, "
+                f"{counts['succeeded']} succeeded, {counts['still_failing']} still failing"
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.exception(f"Beehiiv retry scheduler error: {e}")
+
+
 # ── Admin utilities ────────────────────────────────────────────────────────────
 
 @app.get("/admin/workspaces")
@@ -566,3 +586,18 @@ async def admin_check_followups(background: BackgroundTasks):
     """Manually trigger a follow-up check (for testing)."""
     background.add_task(_process_due_followups)
     return {"status": "triggered"}
+
+
+@app.post("/admin/retry-beehiiv")
+async def admin_retry_beehiiv(background: BackgroundTasks):
+    """Manually trigger a Beehiiv retry run."""
+    background.add_task(process_retry_queue)
+    return {"status": "triggered"}
+
+
+@app.get("/admin/beehiiv-queue")
+async def admin_beehiiv_queue():
+    """Show leads currently in the Beehiiv retry queue."""
+    from src.integrations.beehiiv import get_retry_queue
+    queue = get_retry_queue()
+    return {"count": len(queue), "leads": queue}
