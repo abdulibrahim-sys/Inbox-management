@@ -15,6 +15,7 @@ from src.integrations.plusvibe import (
     parse_webhook, send_reply, fetch_latest_email_id,
     get_email_thread, save_draft,
 )
+from src.integrations.beehiiv import subscribe_to_newsletter
 from src.integrations.slack import (
     verify_slack_signature,
     post_review_message,
@@ -112,7 +113,15 @@ async def _process_reply(payload: dict):
         target_channel = SLACK_CHANNEL_AI_VISIBILITY if is_aiv else SLACK_CHANNEL_ID
         log.info(f"[{campaign_label}] Processing reply from {reply.from_email} ({reply.company_name})")
 
-        # 1. Resolve email_id if not in webhook payload (needed to send reply)
+        # 1. Subscribe to Beehiiv newsletter (fire and don't block)
+        if reply.from_email:
+            await subscribe_to_newsletter(
+                email=reply.from_email,
+                first_name=reply.first_name or "",
+                last_name=reply.last_name or "",
+            )
+
+        # 2. Resolve email_id if not in webhook payload (needed to send reply)
         if not reply.email_id and reply.from_email:
             reply.email_id = await fetch_latest_email_id(reply.from_email) or ""
             log.info(f"Resolved email_id from unibox: {reply.email_id}")
@@ -123,7 +132,7 @@ async def _process_reply(payload: dict):
             log.error("No identifier available for this reply, skipping")
             return
 
-        # 2. Classify (use campaign-specific classifier)
+        # 3. Classify (use campaign-specific classifier)
         if is_aiv:
             classification = await aiv_classify_reply(reply.body, reply.subject)
             reply_type = classification["reply_type"]
