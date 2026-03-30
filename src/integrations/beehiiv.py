@@ -18,7 +18,8 @@ async def subscribe_to_newsletter(
     Returns True on success, False on failure.
     """
     api_key = os.getenv("BEEHIIV_API_KEY")
-    pub_id = os.getenv("BEEHIIV_PUBLICATION_ID")
+    raw_pub_id = os.getenv("BEEHIIV_PUBLICATION_ID", "")
+    pub_id = raw_pub_id if raw_pub_id.startswith("pub_") else f"pub_{raw_pub_id}"
 
     if not api_key or not pub_id:
         log.error("Beehiiv credentials not set (BEEHIIV_API_KEY / BEEHIIV_PUBLICATION_ID)")
