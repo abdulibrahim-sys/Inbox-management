@@ -99,9 +99,8 @@ Protected (read-only): `Dashboard`, `Loss Analysis`
 Data start rows: Pipeline=3, Call Log=3, Follow-Up Schedule=4, Monthly Metrics=4
 
 **Auto-writes:**
-- `POST /webhook/plusvibe` → appends/updates Pipeline row
-- `POST /webhook/calendly` (invitee.created) → appends Call Log row + updates Pipeline stage to "Call Booked"
-- `POST /webhook/calendly` (invitee.canceled) → marks no-show, schedules nurture
+- `POST /webhook/plusvibe` (LEAD_MARKED_AS_INTERESTED) → appends/updates Pipeline row
+- `POST /webhook/plusvibe` (Meeting booked tag) → appends Call Log row + updates Pipeline stage to "Call Booked" + Slack notification
 - Approved reply → updates Pipeline `last_touch`, `stage`, `next_followup`
 
 **Slack CRM bot (@mention → `/webhook/slack/events`):**
@@ -140,7 +139,6 @@ Data start rows: Pipeline=3, Call Log=3, Follow-Up Schedule=4, Monthly Metrics=4
 `CALENDLY_WEBHOOK_SECRET`
 
 ### Webhooks to Register
-- PlusVibe: `POST /webhook/plusvibe`
-- Calendly: `POST /webhook/calendly`
+- PlusVibe: `POST /webhook/plusvibe` (handles both LEAD_MARKED_AS_INTERESTED and Meeting booked tag)
 - Slack Actions: `POST /webhook/slack/actions`
 - Slack Events: `POST /webhook/slack/events` (subscribe to `app_mention`)

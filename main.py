@@ -19,7 +19,6 @@ from src.integrations.plusvibe import (
     get_email_thread, save_draft,
 )
 from src.integrations.beehiiv import subscribe_to_newsletter, process_retry_queue
-from src.integrations.calendly import verify_calendly_signature, parse_calendly_event
 from src.integrations.sheets import (
     TAB_PIPELINE, TAB_CALL_LOG, TAB_FOLLOW_UP,
     find_row_by_email, append_row, update_row,
@@ -104,11 +103,29 @@ async def health():
 
 @app.post("/webhook/plusvibe")
 async def plusvibe_webhook(request: Request, background: BackgroundTasks):
-    """Receive reply events from PlusVibe and trigger the processing pipeline."""
+    """Receive events from PlusVibe — reply events and meeting booked tags."""
     body = await request.json()
     log.info(f"PlusVibe webhook received: {json.dumps(body)[:200]}")
-    background.add_task(_process_reply, body)
+
+    if _is_meeting_booked(body):
+        background.add_task(_process_meeting_booked, body)
+    else:
+        background.add_task(_process_reply, body)
+
     return JSONResponse({"status": "received"}, status_code=200)
+
+
+def _is_meeting_booked(payload: dict) -> bool:
+    """Detect a 'Meeting booked' tag event from PlusVibe."""
+    data = payload.get("data", payload)
+    event_type = (payload.get("event_type") or payload.get("event") or "").lower()
+    tag = (data.get("tag") or data.get("label") or data.get("tag_name") or "").lower()
+    return (
+        "meeting" in event_type
+        or "booked" in event_type
+        or tag == "meeting booked"
+        or "meeting booked" in tag
+    )
 
 
 def _is_ai_visibility_campaign(payload: dict) -> bool:
@@ -299,109 +316,56 @@ async def _write_to_pipeline(reply) -> None:
         log.info(f"Pipeline: existing row updated for {reply.from_email}")
 
 
-# ── Calendly webhook ──────────────────────────────────────────────────────────
+# ── PlusVibe meeting booked handler ──────────────────────────────────────────
 
-@app.post("/webhook/calendly")
-async def calendly_webhook(request: Request, background: BackgroundTasks):
-    """Receive booking and cancellation events from Calendly."""
-    body_bytes = await request.body()
-    signature = request.headers.get("Calendly-Webhook-Signature", "")
-
-    # URL verification challenge (Calendly sends this on first registration)
+async def _process_meeting_booked(payload: dict) -> None:
+    """Handle a 'Meeting booked' tag event from PlusVibe."""
     try:
-        body = json.loads(body_bytes)
-    except Exception:
-        return Response(status_code=400)
+        data = payload.get("data", payload)
+        email = (data.get("email") or data.get("from_address") or "").strip().lower()
+        first_name = data.get("first_name") or ""
+        last_name = data.get("last_name") or ""
+        name = f"{first_name} {last_name}".strip() or email
+        campaign = data.get("campaign_name") or ""
+        today = today_str()
 
-    if not verify_calendly_signature(body_bytes, signature):
-        log.warning("Calendly signature verification failed")
-        return Response(status_code=403)
+        # Pull extra context from Pipeline row
+        row_num, row_data = await find_row_by_email(TAB_PIPELINE, email)
+        company = data.get("company_name") or (row_data.get("company") if row_data else "") or ""
 
-    log.info(f"Calendly webhook received: {body.get('event')}")
-    background.add_task(_process_calendly_event, body)
-    return JSONResponse({"status": "received"}, status_code=200)
+        # Update Pipeline stage
+        if row_num:
+            await update_row(TAB_PIPELINE, row_num, {
+                "stage": "Call Booked",
+                "last_touch": today,
+            })
+            log.info(f"Pipeline: {email} → Call Booked")
+        else:
+            # Not in pipeline yet — add them
+            await append_row(TAB_PIPELINE, [
+                name, company, email, today, campaign,
+                "", "", "Call Booked", "Positive", today,
+                "", "", today, "", "0", "", "", "",
+            ])
+            log.info(f"Pipeline: new row added for {email} (meeting booked)")
 
+        # Append Call Log row
+        await append_row(TAB_CALL_LOG, [
+            name, today, "", company, campaign,
+            "Booked", "", "", "", "", "", "", email,
+        ])
 
-async def _process_calendly_event(payload: dict) -> None:
-    try:
-        event = parse_calendly_event(payload)
-        if not event:
-            return
-
-        email = event["email"]
-        name = event["name"]
-        call_date = event["call_date"]
-        call_time = event["call_time"]
-        company = event["company"]
-
+        # Notify Slack
         from slack_sdk import WebClient
         slack = WebClient(token=os.getenv("SLACK_BOT_TOKEN"))
-
-        if event["event_type"] == "invitee.created":
-            # Update Pipeline to Call Booked
-            row_num, row_data = await find_row_by_email(TAB_PIPELINE, email)
-            campaign = row_data.get("campaign", "") if row_data else ""
-            company = company or (row_data.get("company", "") if row_data else "")
-
-            if row_num:
-                await update_row(TAB_PIPELINE, row_num, {
-                    "stage": "Call Booked",
-                    "last_touch": today_str(),
-                    "next_followup": call_date,
-                })
-
-            # Append Call Log row (store email in Notes col M for cancellation lookup)
-            await append_row(TAB_CALL_LOG, [
-                name, call_date, call_time, company, campaign,
-                "Booked", "", "", "", "", "", "", email,
-            ])
-
-            slack.chat_postMessage(
-                channel=SLACK_CHANNEL_ID,
-                text=f"Call booked: *{name}* ({company}) on {call_date} {call_time}",
-            )
-            log.info(f"Calendly: call booked for {email} on {call_date}")
-
-        elif event["event_type"] == "invitee.canceled":
-            today = today_str()
-            next_followup = date_str(date.today() + timedelta(days=2))
-
-            # Find and update Call Log row by email in Notes
-            from src.integrations.sheets import read_all_rows
-            call_rows = await read_all_rows(TAB_CALL_LOG)
-            for r in reversed(call_rows):
-                if email in r.get("notes", "").lower():
-                    await update_row(TAB_CALL_LOG, r["_row_number"], {
-                        "show_status": "Cancelled",
-                        "next_step": "Reschedule",
-                        "reschedule_date": today,
-                    })
-                    break
-
-            # Revert Pipeline stage
-            row_num, row_data = await find_row_by_email(TAB_PIPELINE, email)
-            if row_num:
-                company = company or (row_data.get("company", "") if row_data else "")
-                await update_row(TAB_PIPELINE, row_num, {
-                    "stage": "Positive Reply",
-                    "last_touch": today,
-                    "next_followup": next_followup,
-                })
-
-            # Add to Follow-Up Schedule
-            await append_row(TAB_FOLLOW_UP, [
-                name, company, email, "Call Booked", "Call Cancelled",
-                "1", today, next_followup, "Personal Email", "Pending", "", "Pending", "",
-            ])
-
-            slack.chat_postMessage(
-                channel=SLACK_CHANNEL_ID,
-                text=f"Call cancelled: *{name}* ({company}) — follow-up scheduled for {next_followup}",
-            )
-            log.info(f"Calendly: call cancelled for {email}")
+        slack.chat_postMessage(
+            channel=SLACK_CHANNEL_ID,
+            text=f":calendar: *Meeting booked* — *{name}* ({company})\nCampaign: {campaign or 'N/A'}",
+        )
+        log.info(f"Meeting booked processed for {email}")
 
     except Exception as e:
-        log.exception(f"Calendly event processing error: {e}")
+        log.exception(f"Meeting booked processing error: {e}")
 
 
 # ── Slack interactivity ───────────────────────────────────────────────────────
