@@ -230,15 +230,20 @@ async def _process_reply(payload: dict):
 
 _SENDING_DOMAIN_KEYWORDS = {"trendfeed", "trendsender", "trendconnect", "trendreach", "hiretrendfeed", "gettrendfeed", "jointrendfeed", "trytrendfeed"}
 _SENDING_DOMAIN_EXACT = {"trendfeed.co.uk"}
+_SENDING_PERSONAS = {"elena clifford", "mina willard", "riley marchmain", "julia milton", "hanna raymond", "kendall hollinghurst", "crystal rosewood", "erin whitfield", "bethany cranston", "lacey northcott", "raymond hanna"}
 
 
-def _is_sending_account(email: str) -> bool:
+def _is_sending_account(email: str, name: str = "") -> bool:
     domain = email.split("@")[-1].lower()
     if domain in _SENDING_DOMAIN_EXACT:
         return True
     if domain.endswith(".help"):
         return True
-    return any(kw in domain for kw in _SENDING_DOMAIN_KEYWORDS)
+    if any(kw in domain for kw in _SENDING_DOMAIN_KEYWORDS):
+        return True
+    if name.strip().lower() in _SENDING_PERSONAS:
+        return True
+    return False
 
 
 async def _write_to_pipeline(reply) -> None:
@@ -246,7 +251,8 @@ async def _write_to_pipeline(reply) -> None:
     if not reply.from_email:
         return
     # Skip our own sending accounts
-    if _is_sending_account(reply.from_email):
+    full_name = f"{reply.first_name or ''} {reply.last_name or ''}".strip()
+    if _is_sending_account(reply.from_email, full_name):
         log.info(f"Pipeline: skipping sending account {reply.from_email}")
         return
     # Skip if no company name (likely a sending account with unknown domain)
@@ -307,6 +313,10 @@ async def _process_meeting_booked(payload: dict) -> None:
         last_name = data.get("last_name") or ""
         name = f"{first_name} {last_name}".strip() or email
         campaign = data.get("campaign_name") or ""
+
+        if _is_sending_account(email, name):
+            log.info(f"Meeting booked: skipping sending account {email}")
+            return
         today = today_str()
 
         # Pull extra context from Pipeline row
