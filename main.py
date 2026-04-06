@@ -228,7 +228,17 @@ async def _process_reply(payload: dict):
 
 # ── Pipeline helper ───────────────────────────────────────────────────────────
 
-_SENDING_DOMAINS = {"trendfeedapp.info", "trendfeedteam.info", "trendfeedco.info", "trendfeed.co.uk"}
+_SENDING_DOMAIN_KEYWORDS = {"trendfeed", "trendsender", "trendconnect", "trendreach", "hiretrendfeed", "gettrendfeed", "jointrendfeed", "trytrendfeed"}
+_SENDING_DOMAIN_EXACT = {"trendfeed.co.uk"}
+
+
+def _is_sending_account(email: str) -> bool:
+    domain = email.split("@")[-1].lower()
+    if domain in _SENDING_DOMAIN_EXACT:
+        return True
+    if domain.endswith(".help"):
+        return True
+    return any(kw in domain for kw in _SENDING_DOMAIN_KEYWORDS)
 
 
 async def _write_to_pipeline(reply) -> None:
@@ -236,8 +246,7 @@ async def _write_to_pipeline(reply) -> None:
     if not reply.from_email:
         return
     # Skip our own sending accounts
-    domain = reply.from_email.split("@")[-1].lower()
-    if domain in _SENDING_DOMAINS:
+    if _is_sending_account(reply.from_email):
         log.info(f"Pipeline: skipping sending account {reply.from_email}")
         return
 
