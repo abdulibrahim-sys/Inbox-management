@@ -82,11 +82,9 @@ Stay pragmatic. Stay reliable. Keep learning.
 | Campaign | Slack Channel | Classifier | Drafter |
 |---|---|---|---|
 | 2 Weeks (Trendfeed) | `#inbox-agent-reply` (`C0AJG9V9JSE`) | `src/classifier.py` | `src/drafter.py` |
-| AI Search Visibility | `#ai-visibility-replies` (`C0AP56KJKV2`) | `src/ai_visibility_classifier.py` | `src/ai_visibility_drafter.py` |
 
 ### Reply Agent Rules
-- Only handle `LEAD_MARKED_AS_INTERESTED` webhook events
-- Route by `campaign_name` field (lowercase substring match against `AI_VISIBILITY_CAMPAIGNS`)
+- Only handle `LEAD_MARKED_AS_INTERESTED` webhook events (2 Weeks campaign only)
 - First reply: no case studies; follow-ups may include them
 - Responses: 60–100 words, handle objection first, pivot to call with "You can grab a time here 👉 [link]"
 - Own Trendfeed's cold emails — never disclaim or distance from them
