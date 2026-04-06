@@ -15,7 +15,7 @@ import anthropic
 from src.integrations.sheets import (
     TAB_PIPELINE, TAB_CALL_LOG, TAB_FOLLOW_UP,
     find_row_by_email, append_row, update_row, read_all_rows,
-    today_str, date_str, parse_date, increment_field,
+    today_str, date_str, parse_date, increment_field, update_monthly_metrics,
 )
 
 log = logging.getLogger(__name__)
@@ -253,11 +253,19 @@ async def _handle_close_deal(parsed, email, name, company, row_num) -> str:
             })
             break
 
+    # Update Monthly Metrics
+    if deal_value:
+        try:
+            await update_monthly_metrics(float(deal_value))
+        except Exception as e:
+            log.exception(f"Monthly Metrics update failed: {e}")
+
     val_str = f"${deal_value:,}" if deal_value else "not specified"
     return (f"*Deal Closed*\n"
             f"• Prospect: {name} ({company})\n"
             f"• Value: {val_str}\n"
-            f"• Pipeline stage → Closed Won")
+            f"• Pipeline stage → Closed Won\n"
+            f"• Monthly Metrics updated")
 
 
 async def _handle_close_lost(parsed, email, name, company, row_num, row_data) -> str:

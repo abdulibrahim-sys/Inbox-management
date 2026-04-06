@@ -303,3 +303,75 @@ async def increment_field(tab: str, row_number: int, field: str, default: int = 
     except (ValueError, TypeError):
         new_val = default + 1
     await update_row(tab, row_number, {field: str(new_val)})
+
+
+async def find_monthly_row(month_label: str) -> int | None:
+    """
+    Find the row number for a given month label (e.g. 'Apr 2026') in Monthly Metrics.
+    Returns the sheet row number or None if not found.
+    """
+    def _find():
+        svc = _get_service()
+        sid = _sheet_id()
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=sid,
+            range=f"{TAB_MONTHLY}!A:A",
+        ).execute()
+        return result.get("values", [])
+
+    try:
+        values = await _run(_find)
+        data_start = TAB_DATA_START[TAB_MONTHLY]
+        for i, row in enumerate(values):
+            sheet_row = i + 1
+            if sheet_row < data_start:
+                continue
+            if row and row[0].strip() == month_label:
+                return sheet_row
+    except Exception as e:
+        log.exception(f"Sheets find_monthly_row failed: {e}")
+    return None
+
+
+async def update_monthly_metrics(deal_value: float) -> None:
+    """
+    On a deal close: find today's month row and increment deals_closed by 1,
+    add deal_value to revenue. If the month row doesn't exist, append it.
+    """
+    today = date.today()
+    month_label = today.strftime("%b %Y")  # e.g. "Apr 2026"
+
+    row_num = await find_monthly_row(month_label)
+
+    if row_num:
+        row = await _get_row(TAB_MONTHLY, row_num)
+
+        # Increment deals_closed
+        try:
+            new_closed = int(row.get("deals_closed", "") or 0) + 1
+        except (ValueError, TypeError):
+            new_closed = 1
+
+        # Add to revenue (strip $ and commas)
+        try:
+            existing_rev = float(str(row.get("revenue", "0")).replace("$", "").replace(",", "") or 0)
+        except (ValueError, TypeError):
+            existing_rev = 0.0
+        new_rev = existing_rev + deal_value
+
+        # Recalculate avg deal size
+        avg = round(new_rev / new_closed) if new_closed else 0
+
+        await update_row(TAB_MONTHLY, row_num, {
+            "deals_closed": str(new_closed),
+            "revenue": str(round(new_rev)),
+            "avg_deal_size": f"${avg:,}",
+        })
+        log.info(f"Monthly Metrics updated for {month_label}: {new_closed} deals, ${new_rev:,.0f} revenue")
+    else:
+        # Month row doesn't exist yet — append it
+        await append_row(TAB_MONTHLY, [
+            month_label, "", "", "", "", "", "", "", "", "", "1", "", str(round(deal_value)),
+            "", f"${round(deal_value):,}", "", "", "",
+        ])
+        log.info(f"Monthly Metrics: appended new row for {month_label}")
