@@ -228,9 +228,17 @@ async def _process_reply(payload: dict):
 
 # ── Pipeline helper ───────────────────────────────────────────────────────────
 
+_SENDING_DOMAINS = {"trendfeedapp.info", "trendfeedteam.info", "trendfeedco.info", "trendfeed.co.uk"}
+
+
 async def _write_to_pipeline(reply) -> None:
     """Write or update a prospect in the Google Sheets Pipeline tab."""
     if not reply.from_email:
+        return
+    # Skip our own sending accounts
+    domain = reply.from_email.split("@")[-1].lower()
+    if domain in _SENDING_DOMAINS:
+        log.info(f"Pipeline: skipping sending account {reply.from_email}")
         return
 
     today = today_str()
