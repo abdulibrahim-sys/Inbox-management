@@ -249,6 +249,10 @@ async def _write_to_pipeline(reply) -> None:
     if _is_sending_account(reply.from_email):
         log.info(f"Pipeline: skipping sending account {reply.from_email}")
         return
+    # Skip if no company name (likely a sending account with unknown domain)
+    if not reply.company_name:
+        log.info(f"Pipeline: skipping {reply.from_email} — no company name")
+        return
 
     today = today_str()
     next_followup = date_str(date.today() + timedelta(days=2))
