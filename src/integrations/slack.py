@@ -298,6 +298,72 @@ def update_message_cancelled(channel: str, ts: str, manager: str):
     )
 
 
+def post_call_booked_message(name: str, company: str, email: str, campaign: str = "") -> str:
+    """
+    Post a call booked notification with Showed / No Show / Not Qualified buttons.
+    Returns the message ts.
+    """
+    value = json.dumps({"email": email, "name": name, "company": company})
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "📅 Call Booked"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*👤 Prospect:*\n{name}"},
+                {"type": "mrkdwn", "text": f"*🏢 Company:*\n{company}"},
+                {"type": "mrkdwn", "text": f"*📧 Email:*\n{email}"},
+                {"type": "mrkdwn", "text": f"*📣 Campaign:*\n{campaign or '2 Weeks'}"},
+            ],
+        },
+        {
+            "type": "actions",
+            "block_id": f"call_outcome_{email}",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✅ Showed"},
+                    "style": "primary",
+                    "action_id": "call_showed",
+                    "value": value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ No Show"},
+                    "style": "danger",
+                    "action_id": "call_no_show",
+                    "value": value,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🚫 Not Qualified"},
+                    "action_id": "call_not_qualified",
+                    "value": value,
+                },
+            ],
+        },
+    ]
+
+    response = client.chat_postMessage(
+        channel=SLACK_CHANNEL_ID,
+        blocks=blocks,
+        text=f"Call booked — {name} ({company})",
+    )
+    return response["ts"]
+
+
+def update_call_outcome_message(channel: str, ts: str, name: str, company: str, outcome: str, manager: str):
+    """Replace the call booked buttons with the recorded outcome."""
+    icons = {"Showed": "✅", "No Show": "❌", "Not Qualified": "🚫"}
+    icon = icons.get(outcome, "•")
+    _update_message_status(
+        channel, ts,
+        f"{icon} *{outcome}* — {name} ({company}) — logged by {manager} at <!date^{int(time.time())}^{{time}}|now>"
+    )
+
+
 def post_unsubscribe_alert(first_name: str, last_name: str, company_name: str, from_email: str):
     """Post an urgent unsubscribe alert to Slack."""
     client.chat_postMessage(

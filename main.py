@@ -37,6 +37,8 @@ from src.integrations.slack import (
     open_followup_edit_modal,
     update_message_draft_saved,
     update_message_cancelled,
+    post_call_booked_message,
+    update_call_outcome_message,
     SLACK_CHANNEL_ID,
 )
 from src.classifier import classify_reply, get_reply_type_meta
@@ -345,17 +347,51 @@ async def _process_meeting_booked(payload: dict) -> None:
             "Booked", "", "", "", "", "", "", email,
         ])
 
-        # Notify Slack
-        from slack_sdk import WebClient
-        slack = WebClient(token=os.getenv("SLACK_BOT_TOKEN"))
-        slack.chat_postMessage(
-            channel=SLACK_CHANNEL_ID,
-            text=f":calendar: *Meeting booked* — *{name}* ({company})\nCampaign: {campaign or 'N/A'}",
-        )
+        # Post to Slack with outcome buttons
+        post_call_booked_message(name=name, company=company, email=email, campaign=campaign)
         log.info(f"Meeting booked processed for {email}")
 
     except Exception as e:
         log.exception(f"Meeting booked processing error: {e}")
+
+
+# ── Call outcome handler ─────────────────────────────────────────────────────
+
+async def _handle_call_outcome(action_value: str, outcome: str, manager: str, channel: str, message_ts: str):
+    """Handle Showed / No Show / Not Qualified button clicks."""
+    try:
+        data = json.loads(action_value)
+        email = data["email"]
+        name = data["name"]
+        company = data["company"]
+        today = today_str()
+
+        # Update Call Log show_status
+        call_rows = await read_all_rows(TAB_CALL_LOG)
+        for r in reversed(call_rows):
+            notes = r.get("notes", "").lower()
+            if email.lower() in notes:
+                updates = {"show_status": outcome, "next_step": "Follow up" if outcome == "Showed" else "Nurture"}
+                await update_row(TAB_CALL_LOG, r["_row_number"], updates)
+                break
+
+        # Update Pipeline
+        row_num, row_data = await find_row_by_email(TAB_PIPELINE, email)
+        if row_num:
+            if outcome == "Showed":
+                await update_row(TAB_PIPELINE, row_num, {"stage": "Showed", "last_touch": today})
+            elif outcome == "No Show":
+                await update_row(TAB_PIPELINE, row_num, {"stage": "No Show", "last_touch": today})
+                await add_nurture_schedule(email, name, company, "Call Booked", "No Show")
+            elif outcome == "Not Qualified":
+                await update_row(TAB_PIPELINE, row_num, {"stage": "Closed Lost", "loss_reason": "Not Qualified", "last_touch": today})
+
+        # Update the Slack message
+        update_call_outcome_message(channel, message_ts, name, company, outcome, manager)
+        log.info(f"Call outcome '{outcome}' logged for {email} by {manager}")
+
+    except Exception as e:
+        log.exception(f"Call outcome handler error: {e}")
 
 
 # ── Slack interactivity ───────────────────────────────────────────────────────
@@ -391,6 +427,16 @@ async def slack_actions(request: Request, background: BackgroundTasks):
             pending = get_pending(action_value)
             if pending:
                 open_edit_modal(trigger_id, action_value, pending["ai_draft"])
+
+        # ── Call outcome actions ──
+        elif action_id in ("call_showed", "call_no_show", "call_not_qualified"):
+            outcome_map = {
+                "call_showed": "Showed",
+                "call_no_show": "No Show",
+                "call_not_qualified": "Not Qualified",
+            }
+            outcome = outcome_map[action_id]
+            background.add_task(_handle_call_outcome, action_value, outcome, manager, channel, message_ts)
 
         # ── Follow-up actions ──
         elif action_id == "approve_followup":
