@@ -26,6 +26,7 @@ from src.integrations.sheets import (
 )
 from src.crm_commands import parse_slack_command, execute_crm_command, add_nurture_schedule
 from src.reports import generate_weekly_report, generate_monthly_report
+from src.deliverability import check_deliverability
 from src.integrations.slack import (
     verify_slack_signature,
     post_review_message,
@@ -746,6 +747,10 @@ async def _reports_scheduler():
             if now_dt.weekday() == 4 and now_dt.hour == 19:
                 await generate_weekly_report()
 
+            # Deliverability check: Monday (weekday 0) at 09:xx
+            if now_dt.weekday() == 0 and now_dt.hour == 9:
+                await check_deliverability()
+
             # Monthly: last day of month at 19:xx
             last_day = cal_module.monthrange(now.year, now.month)[1]
             if now.day == last_day and now_dt.hour == 19:
@@ -830,6 +835,13 @@ async def admin_register_webhook(request: Request):
 async def admin_check_followups(background: BackgroundTasks):
     """Manually trigger a follow-up check (for testing)."""
     background.add_task(_process_due_followups)
+    return {"status": "triggered"}
+
+
+@app.post("/admin/check-deliverability")
+async def admin_check_deliverability(background: BackgroundTasks):
+    """Manually trigger a deliverability check."""
+    background.add_task(check_deliverability)
     return {"status": "triggered"}
 
 
