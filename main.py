@@ -26,7 +26,7 @@ from src.integrations.sheets import (
 )
 from src.crm_commands import parse_slack_command, execute_crm_command, add_nurture_schedule
 from src.reports import generate_weekly_report, generate_monthly_report
-from src.deliverability import check_deliverability
+from src.deliverability import check_deliverability, check_daily_recovery, check_weekly_deliverability_summary
 from src.integrations.slack import (
     verify_slack_signature,
     post_review_message,
@@ -733,7 +733,7 @@ async def _beehiiv_retry_scheduler():
 # ── Reports scheduler ────────────────────────────────────────────────────────
 
 async def _reports_scheduler():
-    """Background task that fires weekly (Friday 7pm EST) and monthly (last day 7pm EST) reports."""
+    """Background task — fires scheduled reports and deliverability checks."""
     log.info("Reports scheduler started")
     EST = ZoneInfo("America/New_York")
     while True:
@@ -742,18 +742,28 @@ async def _reports_scheduler():
             now = date.today()
             import datetime as _dt
             now_dt = _dt.datetime.now(EST)
+            hour = now_dt.hour
+            dow  = now_dt.weekday()  # Mon=0 … Sun=6
 
-            # Weekly: Friday (weekday 4) at 19:xx
-            if now_dt.weekday() == 4 and now_dt.hour == 19:
+            # Daily end-of-day recovery check-in: 8pm EST every day
+            if hour == 20:
+                await check_daily_recovery()
+
+            # Weekly deliverability summary: Friday 7pm EST
+            if dow == 4 and hour == 19:
+                await check_weekly_deliverability_summary()
+
+            # Weekly pipeline/CRM report: Friday 7pm EST
+            if dow == 4 and hour == 19:
                 await generate_weekly_report()
 
-            # Deliverability check: Monday (weekday 0) at 09:xx
-            if now_dt.weekday() == 0 and now_dt.hour == 9:
+            # Deliverability trend check: Monday 9am EST
+            if dow == 0 and hour == 9:
                 await check_deliverability()
 
-            # Monthly: last day of month at 19:xx
+            # Monthly: last day of month at 7pm EST
             last_day = cal_module.monthrange(now.year, now.month)[1]
-            if now.day == last_day and now_dt.hour == 19:
+            if now.day == last_day and hour == 19:
                 await generate_monthly_report()
 
         except asyncio.CancelledError:
@@ -840,8 +850,22 @@ async def admin_check_followups(background: BackgroundTasks):
 
 @app.post("/admin/check-deliverability")
 async def admin_check_deliverability(background: BackgroundTasks):
-    """Manually trigger a deliverability check."""
+    """Manually trigger the weekly deliverability trend check."""
     background.add_task(check_deliverability)
+    return {"status": "triggered"}
+
+
+@app.post("/admin/daily-recovery-check")
+async def admin_daily_recovery(background: BackgroundTasks):
+    """Manually trigger the end-of-day recovery check-in."""
+    background.add_task(check_daily_recovery)
+    return {"status": "triggered"}
+
+
+@app.post("/admin/weekly-deliverability-summary")
+async def admin_weekly_deliverability(background: BackgroundTasks):
+    """Manually trigger the Friday weekly deliverability summary."""
+    background.add_task(check_weekly_deliverability_summary)
     return {"status": "triggered"}
 
 

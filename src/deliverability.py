@@ -41,7 +41,7 @@ def _channel() -> str:
     return os.getenv("SLACK_CHANNEL_ID", "")
 
 
-async def _fetch_week_stats(start: date, end: date) -> dict | None:
+async def _fetch_week_stats(start: date, end: date):
     """Fetch campaign stats for a given week from PlusVibe."""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -185,3 +185,174 @@ async def check_deliverability() -> None:
 
     _slack().chat_postMessage(channel=_channel(), text=text)
     log.info(f"Deliverability check posted — level={level}, rate={rate}%, declining_weeks={declining_weeks}")
+
+
+async def check_daily_recovery() -> None:
+    """
+    End-of-day recovery check-in. Compares today vs yesterday and posts a
+    concise Slack update. Runs daily at 8pm EST.
+    """
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    today_stats    = await _fetch_week_stats(today, today)
+    yesterday_stats = await _fetch_week_stats(yesterday, yesterday)
+
+    # If no sends today yet, skip silently
+    if not today_stats or today_stats["sent"] == 0:
+        log.info("Daily recovery check: no sends recorded for today yet — skipping")
+        return
+
+    s = today_stats
+    p = yesterday_stats
+
+    def delta(curr, prev, field):
+        if not prev:
+            return ""
+        d = curr[field] - prev[field]
+        arrow = "↑" if d > 0 else ("↓" if d < 0 else "→")
+        return f" ({arrow}{abs(round(d, 2))})"
+
+    reply_d   = delta(s, p, "reply_rate")
+    bounce_d  = delta(s, p, "bounce_rate") if p else ""
+    pos_d     = delta(s, p, "positive_rate")
+    sent_d    = delta(s, p, "sent")
+
+    # Bounce rate assessment
+    bounce_rate = s.get("bounce_rate", 0.0)
+    if bounce_rate < 2.0:
+        bounce_flag = "✅"
+    elif bounce_rate < 4.0:
+        bounce_flag = "⚠️"
+    else:
+        bounce_flag = "🚨"
+
+    # Reply rate assessment
+    rate = s["reply_rate"]
+    if rate >= 1.0:
+        rate_flag = "✅"
+    elif rate >= 0.8:
+        rate_flag = "⚠️"
+    else:
+        rate_flag = "🔴"
+
+    # Overall signal
+    if p:
+        rate_improving   = s["reply_rate"] > p["reply_rate"]
+        bounce_improving = s["bounce_rate"] <= p["bounce_rate"] if p.get("bounce_rate") else True
+        if rate_improving and bounce_improving:
+            signal = "📈 *Recovery trending in the right direction.*"
+        elif rate_improving:
+            signal = "📈 Reply rate improving — bounce rate still elevated, keep watching."
+        elif bounce_improving:
+            signal = "📉 Bounce rate easing — reply rate still low, give it more time."
+        else:
+            signal = "⚠️ Both reply rate and bounce rate moving the wrong way — review sending settings."
+    else:
+        signal = "No previous day to compare."
+
+    date_label = today.strftime("%-d %b %Y")
+    text = (
+        f"📡 *End-of-Day Recovery Check-In — {date_label}*\n\n"
+        f"*Today's Numbers (2 Weeks Campaign)*\n"
+        f"• Sends: *{s['sent']:,}*{sent_d}\n"
+        f"• Reply Rate: {rate_flag} *{s['reply_rate']}%*{reply_d}\n"
+        f"• Bounce Rate: {bounce_flag} *{bounce_rate}%*{bounce_d}\n"
+        f"• Positive Reply Rate: *{s['positive_rate']}%*{pos_d} _(of replies that were interested)_\n"
+        f"• Replies Received: *{s['replied']}*\n\n"
+        f"*Signal*\n{signal}\n\n"
+        f"_Thresholds: Reply rate healthy ≥1.0% | Warning <1.0% | Critical <0.8% — Bounce healthy <2%_"
+    )
+
+    _slack().chat_postMessage(channel=_channel(), text=text)
+    log.info(f"Daily recovery check posted — rate={rate}%, bounce={bounce_rate}%, sent={s['sent']}")
+
+
+async def check_weekly_deliverability_summary() -> None:
+    """
+    Friday end-of-week deliverability summary. Pulls each day of the current
+    Mon–Fri week, shows the daily table, week totals, and a recovery assessment.
+    Runs every Friday at 7pm EST alongside the pipeline report.
+    """
+    today = date.today()
+
+    # Build Mon–today for current week
+    days_since_monday = today.weekday()  # Mon=0
+    monday = today - timedelta(days=days_since_monday)
+
+    daily = []
+    for i in range(days_since_monday + 1):
+        d = monday + timedelta(days=i)
+        s = await _fetch_week_stats(d, d)
+        if s and s["sent"] > 0:
+            daily.append(s)
+
+    if not daily:
+        log.warning("Weekly deliverability summary: no data for this week")
+        return
+
+    # Also fetch last week's totals for week-over-week comparison
+    last_monday = monday - timedelta(weeks=1)
+    last_friday = last_monday + timedelta(days=4)
+    last_week = await _fetch_week_stats(last_monday, last_friday)
+
+    # Totals for this week
+    total_sent    = sum(d["sent"] for d in daily)
+    total_replied = sum(d["replied"] for d in daily)
+    total_bounce  = sum(int(d["sent"] * d.get("bounce_rate", 0) / 100) for d in daily)
+    week_reply_rate  = round(total_replied / total_sent * 100, 2) if total_sent else 0.0
+    week_bounce_rate = round(total_bounce / total_sent * 100, 2) if total_sent else 0.0
+
+    # Day-by-day table
+    day_lines = []
+    for i, s in enumerate(daily):
+        label = s["week_start"].strftime("%a %-d %b")
+        arrow = _trend_arrow(s["reply_rate"], daily[i - 1]["reply_rate"]) if i > 0 else "–"
+        bounce = s.get("bounce_rate", 0.0)
+        bounce_flag = "✅" if bounce < 2 else ("⚠️" if bounce < 4 else "🚨")
+        day_lines.append(
+            f"• {label}: *{s['reply_rate']}%* reply {arrow} | {bounce_flag} {bounce}% bounce | {s['sent']:,} sent | {s['replied']} replies"
+        )
+    day_table = "\n".join(day_lines)
+
+    # Week-over-week
+    wow_line = ""
+    if last_week and last_week["sent"] > 0:
+        wow_diff = round(week_reply_rate - last_week["reply_rate"], 2)
+        wow_arrow = "↑" if wow_diff > 0 else ("↓" if wow_diff < 0 else "→")
+        wow_line = (
+            f"\n*Week-over-Week*\n"
+            f"• This week avg reply rate: *{week_reply_rate}%* vs last week *{last_week['reply_rate']}%* "
+            f"({wow_arrow}{abs(wow_diff)}pp)\n"
+            f"• This week sends: *{total_sent:,}* vs last week *{last_week['sent']:,}*"
+        )
+
+    # Recovery assessment
+    if len(daily) >= 3:
+        recent = daily[-3:]
+        improving = all(recent[i]["reply_rate"] >= recent[i-1]["reply_rate"] for i in range(1, len(recent)))
+        if improving:
+            assessment = "✅ *Reply rate has improved consistently over the last 3 days.* Recovery is on track."
+        elif week_reply_rate >= 1.0:
+            assessment = "✅ *Weekly average crossed 1.0%.* Deliverability is healthy — stay the course."
+        elif week_bounce_rate < 2.0:
+            assessment = "📈 *Bounce rate is under control.* Reply rate still recovering — expect improvement next week."
+        else:
+            assessment = "⚠️ *Bounce rate still elevated.* Avoid increasing volume until bounce falls below 2%."
+    else:
+        assessment = "Not enough daily data points this week to assess trend."
+
+    week_label = monday.strftime("%-d %b") + " – " + today.strftime("%-d %b %Y")
+    text = (
+        f"📊 *Weekly Deliverability Summary — {week_label}*\n\n"
+        f"*Day-by-Day Breakdown*\n{day_table}\n\n"
+        f"*Week Totals*\n"
+        f"• Total sent: *{total_sent:,}* | Total replies: *{total_replied}*\n"
+        f"• Avg reply rate: *{week_reply_rate}%* | Avg bounce rate: *{week_bounce_rate}%*"
+        f"{wow_line}\n\n"
+        f"*Recovery Assessment*\n{assessment}\n\n"
+        f"_Thresholds: Healthy ≥1.0% | Warning <1.0% | Critical <0.8% — Bounce healthy <2%_"
+    )
+
+    _slack().chat_postMessage(channel=_channel(), text=text)
+    log.info(f"Weekly deliverability summary posted — week_reply_rate={week_reply_rate}%, sends={total_sent}")
