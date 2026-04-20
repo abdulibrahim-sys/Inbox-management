@@ -105,8 +105,25 @@ async def health():
 @app.post("/webhook/plusvibe")
 async def plusvibe_webhook(request: Request, background: BackgroundTasks):
     """Receive events from PlusVibe — reply events and meeting booked tags."""
-    body = await request.json()
-    log.info(f"PlusVibe webhook received: {json.dumps(body)[:200]}")
+    body_bytes = await request.body()
+    log.info(f"PlusVibe webhook raw: {body_bytes[:500]}")
+
+    try:
+        body = json.loads(body_bytes)
+    except Exception:
+        log.error(f"PlusVibe webhook: failed to parse JSON body: {body_bytes[:200]}")
+        return JSONResponse({"status": "received"}, status_code=200)
+
+    log.info(f"PlusVibe webhook parsed: {json.dumps(body)[:400]}")
+
+    # Store last payload in Redis for debugging
+    try:
+        from src.learning import _get_redis
+        r = _get_redis()
+        if r:
+            r.set("debug:last_plusvibe_webhook", json.dumps(body)[:2000], ex=86400)
+    except Exception:
+        pass
 
     if _is_meeting_booked(body):
         background.add_task(_process_meeting_booked, body)
@@ -895,3 +912,31 @@ async def admin_beehiiv_queue():
     from src.integrations.beehiiv import get_retry_queue
     queue = get_retry_queue()
     return {"count": len(queue), "leads": queue}
+
+
+@app.post("/admin/test-slack")
+async def admin_test_slack():
+    """Fire a test message to both campaign Slack channels to verify connectivity."""
+    from src.integrations.slack import SLACK_CHANNEL_ID
+    from slack_sdk import WebClient as _WC
+    _sc = _WC(token=os.getenv("SLACK_BOT_TOKEN", ""))
+    results = {}
+    for label, channel in [("2_weeks", SLACK_CHANNEL_ID), ("ad_creatives", SLACK_CHANNEL_AD_CREATIVES)]:
+        try:
+            r = _sc.chat_postMessage(channel=channel, text=f"✅ Test message — inbox agent is alive and routing to this channel ({label})")
+            results[label] = {"ok": True, "ts": r["ts"], "channel": channel}
+        except Exception as e:
+            results[label] = {"ok": False, "error": str(e), "channel": channel}
+    return results
+
+
+@app.get("/admin/last-webhook")
+async def admin_last_webhook():
+    """Return the last PlusVibe webhook payload received (stored in Redis)."""
+    from src.learning import _get_redis
+    try:
+        r = _get_redis()
+        raw = r.get("debug:last_plusvibe_webhook")
+        return {"payload": json.loads(raw) if raw else None}
+    except Exception as e:
+        return {"error": str(e)}
