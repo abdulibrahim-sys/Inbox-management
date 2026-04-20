@@ -42,6 +42,17 @@ from src.integrations.slack import (
     update_call_outcome_message,
     SLACK_CHANNEL_ID,
 )
+
+# ── Campaign → Slack channel routing ─────────────────────────────────────────
+CAMPAIGN_2_WEEKS      = "69971f0aefa0db65892f6b37"
+CAMPAIGN_AD_CREATIVES = "69e5f93e9aaf180271922b71"
+SLACK_CHANNEL_AD_CREATIVES = os.getenv("SLACK_CHANNEL_AD_CREATIVES", "C0AP56KJKV2")
+
+
+def _slack_channel_for_campaign(campaign_id: str) -> str:
+    if campaign_id == CAMPAIGN_AD_CREATIVES:
+        return SLACK_CHANNEL_AD_CREATIVES
+    return SLACK_CHANNEL_ID
 from src.classifier import classify_reply, get_reply_type_meta
 from src.drafter import draft_response, compute_diff
 from src.scraper import scrape_and_classify
@@ -193,6 +204,7 @@ async def _process_reply(payload: dict):
         elif reply_type == "uncategorised":
             flag_reason = "Uncategorised — potential new template"
 
+        slack_channel = _slack_channel_for_campaign(reply.campaign_id or "")
         slack_ts = post_review_message(
             email_id=record_id,
             first_name=reply.first_name or "",
@@ -205,18 +217,19 @@ async def _process_reply(payload: dict):
             draft_response=draft,
             flag=flag,
             flag_reason=flag_reason,
+            channel_override=slack_channel,
         )
-        log.info(f"Posted to Slack: ts={slack_ts}")
+        log.info(f"Posted to Slack channel={slack_channel}: ts={slack_ts}")
 
         # 9. Store pending state for when manager approves
         store_pending(record_id, {
             "reply": reply.model_dump(),
             "reply_type": reply_type,
             "category": category,
-            "campaign": "email_marketing",
+            "campaign": reply.campaign_id or "email_marketing",
             "ai_draft": draft,
             "slack_ts": slack_ts,
-            "slack_channel": SLACK_CHANNEL_ID,
+            "slack_channel": slack_channel,
         })
 
         # 9. Write to Google Sheets Pipeline (non-blocking, won't kill existing flow)

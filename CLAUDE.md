@@ -79,12 +79,14 @@ Stay pragmatic. Stay reliable. Keep learning.
 **Stack:** FastAPI + uvicorn on Railway, Claude claude-sonnet-4-6, Upstash Redis, Slack Block Kit, Google Sheets API v4
 
 ### Campaigns
-| Campaign | Slack Channel | Classifier | Drafter |
-|---|---|---|---|
-| 2 Weeks (Trendfeed) | `#inbox-agent-reply` (`C0AJG9V9JSE`) | `src/classifier.py` | `src/drafter.py` |
+| Campaign | ID | Slack Channel | Classifier | Drafter |
+|---|---|---|---|---|
+| 2 Weeks (Trendfeed) | `69971f0aefa0db65892f6b37` | `#inbox-agent-reply` (`C0AJG9V9JSE`) | `src/classifier.py` | `src/drafter.py` |
+| Ad Creative Offer | `69e5f93e9aaf180271922b71` | `#inbox-agent-reply-ad-creatives` (`C0AP56KJKV2`) | `src/classifier.py` | `src/drafter.py` |
 
 ### Reply Agent Rules
-- Only handle `LEAD_MARKED_AS_INTERESTED` webhook events (2 Weeks campaign only)
+- Handle `LEAD_MARKED_AS_INTERESTED` for both 2 Weeks and Ad Creative Offer campaigns
+- Routing: `_slack_channel_for_campaign(campaign_id)` in `main.py` maps campaign ID → Slack channel
 - First reply: no case studies; follow-ups may include them
 - Responses: 60–100 words, handle objection first, pivot to call with "You can grab a time here 👉 [link]"
 - Own Trendfeed's cold emails — never disclaim or distance from them
