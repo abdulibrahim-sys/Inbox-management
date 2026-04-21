@@ -121,7 +121,7 @@ async def plusvibe_webhook(request: Request, background: BackgroundTasks):
         from src.learning import _get_redis
         r = _get_redis()
         if r:
-            r.set("debug:last_plusvibe_webhook", json.dumps(body)[:2000], ex=86400)
+            r.set("debug:last_plusvibe_webhook", json.dumps(body), ex=86400)
     except Exception:
         pass
 
@@ -937,6 +937,11 @@ async def admin_last_webhook():
     try:
         r = _get_redis()
         raw = r.get("debug:last_plusvibe_webhook")
-        return {"payload": json.loads(raw) if raw else None}
+        if not raw:
+            return {"payload": None}
+        try:
+            return {"payload": json.loads(raw)}
+        except Exception:
+            return {"payload_raw": str(raw)[:1000]}
     except Exception as e:
         return {"error": str(e)}
