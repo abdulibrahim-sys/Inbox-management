@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from src.integrations.plusvibe import (
     parse_webhook, send_reply, fetch_latest_email_id,
     get_email_thread, save_draft,
+    list_received_emails, get_lead_data,
 )
 from src.integrations.beehiiv import subscribe_to_newsletter, process_retry_queue
 from src.integrations.sheets import (
@@ -91,6 +92,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_beehiiv_retry_scheduler())
     asyncio.create_task(_reports_scheduler())
     asyncio.create_task(_send_report_poller())
+    asyncio.create_task(_unibox_poller())
     yield
     _followup_task.cancel()
     log.info("Inbox Management Agent shutting down")
@@ -844,6 +846,87 @@ async def _send_report_poller():
             log.exception(f"Send-report poller error: {e}")
 
 
+# ── Unibox poller (trigger replies regardless of PlusVibe's tagging) ─────────
+
+async def _unibox_poller():
+    """
+    Pull received emails from PlusVibe unibox every 2 min and dispatch each
+    new one through `_process_reply`. Independent of `LEAD_MARKED_AS_INTERESTED`
+    webhooks, which require PlusVibe to tag the lead first.
+
+    Each email's unibox `id` is the dedup key (`unibox:seen:<id>`, 30-day TTL).
+    On startup the first poll backfills any existing unprocessed replies.
+    """
+    log.info("Unibox poller started")
+    from src.learning import _get_redis
+    SEEN_TTL = 60 * 60 * 24 * 30  # 30 days
+    # Initial 30s grace so other startup tasks settle
+    await asyncio.sleep(30)
+    while True:
+        try:
+            emails = await list_received_emails(CAMPAIGN_2_WEEKS_MAY)
+            if emails:
+                r = _get_redis()
+                processed = 0
+                for e in emails:
+                    eid = str(e.get("id") or "")
+                    if not eid:
+                        continue
+                    seen_key = f"unibox:seen:{eid}"
+                    if r.get(seen_key):
+                        continue
+                    payload = _unibox_to_webhook_payload(e)
+                    # Enrich with lead_data (first/last name, company, website)
+                    try:
+                        ld = await get_lead_data(payload["data"]["email"], CAMPAIGN_2_WEEKS_MAY) or {}
+                        payload["data"].update({
+                            "first_name":      ld.get("first_name") or "",
+                            "last_name":       ld.get("last_name") or "",
+                            "company_name":    ld.get("company_name") or "",
+                            "company_website": ld.get("company_website") or "",
+                        })
+                    except Exception:
+                        log.exception(f"lead_data lookup failed for {payload['data'].get('email')}")
+                    # Mark seen first so a crash mid-process doesn't loop us
+                    r.set(seen_key, "1", ex=SEEN_TTL)
+                    asyncio.create_task(_process_reply(payload))
+                    processed += 1
+                if processed:
+                    log.info(f"Unibox poller dispatched {processed} new reply/replies")
+            await asyncio.sleep(120)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.exception(f"Unibox poller error: {e}")
+            await asyncio.sleep(120)
+
+
+def _unibox_to_webhook_payload(email: dict) -> dict:
+    """Map a PlusVibe unibox email to the webhook payload shape `parse_webhook` expects."""
+    body_html = ""
+    body = email.get("body") or {}
+    if isinstance(body, dict):
+        body_html = body.get("html") or body.get("text") or ""
+    body_text = body_html or email.get("content_preview") or ""
+
+    to_list = email.get("to_address_email_list") or []
+    to_email = (to_list[0] if to_list else "") or email.get("eaccount") or ""
+
+    return {
+        "event_type": "LEAD_MARKED_AS_INTERESTED",
+        "data": {
+            "email_id":                email.get("id") or "",
+            "lead_id":                 email.get("lead_id") or "",
+            "email":                   email.get("from_address_email") or email.get("lead") or "",
+            "actual_replied_from":     to_email,
+            "campaign_id":             email.get("campaign_id") or "",
+            "campaign_name":           "2 weeks - May [Outlook]",
+            "last_lead_reply_subject": email.get("subject") or "",
+            "last_lead_reply":         body_text,
+        },
+    }
+
+
 # ── Slack Events API (bot @mentions for CRM commands) ────────────────────────
 
 @app.post("/webhook/slack/events")
@@ -983,6 +1066,58 @@ async def admin_set_ramp_state(request: Request):
         return JSONResponse({"error": "invalid date format, expected YYYY-MM-DD"}, status_code=400)
     set_ramp_start(CAMPAIGN_2_WEEKS_MAY, d)
     return {"ok": True, "campaign_id": CAMPAIGN_2_WEEKS_MAY, "ramp_start": d.isoformat()}
+
+
+@app.post("/admin/unibox-poll-now")
+async def admin_unibox_poll_now(request: Request):
+    """
+    Manually trigger one unibox poll cycle and report what was dispatched.
+
+    Optional JSON: {"reset_seen": true} clears the dedup set so all existing
+    received emails on the campaign get reprocessed (use to backfill).
+    """
+    from src.learning import _get_redis
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cid = CAMPAIGN_2_WEEKS_MAY
+    r = _get_redis()
+    SEEN_TTL = 60 * 60 * 24 * 30
+
+    emails = await list_received_emails(cid)
+    if isinstance(body, dict) and body.get("reset_seen"):
+        for e in emails:
+            eid = str(e.get("id") or "")
+            if eid:
+                r.delete(f"unibox:seen:{eid}")
+
+    dispatched: list[dict] = []
+    for e in emails:
+        eid = str(e.get("id") or "")
+        if not eid:
+            continue
+        if r.get(f"unibox:seen:{eid}"):
+            continue
+        payload = _unibox_to_webhook_payload(e)
+        try:
+            ld = await get_lead_data(payload["data"]["email"], cid) or {}
+            payload["data"].update({
+                "first_name":      ld.get("first_name") or "",
+                "last_name":       ld.get("last_name") or "",
+                "company_name":    ld.get("company_name") or "",
+                "company_website": ld.get("company_website") or "",
+            })
+        except Exception:
+            log.exception(f"lead_data lookup failed for {payload['data'].get('email')}")
+        r.set(f"unibox:seen:{eid}", "1", ex=SEEN_TTL)
+        asyncio.create_task(_process_reply(payload))
+        dispatched.append({
+            "email_id": eid,
+            "from": payload["data"]["email"],
+            "subject": payload["data"]["last_lead_reply_subject"],
+        })
+    return {"campaign_id": cid, "received_in_unibox": len(emails), "dispatched": dispatched}
 
 
 @app.post("/admin/send-report-now")

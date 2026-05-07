@@ -237,6 +237,69 @@ async def get_workspaces() -> dict:
         return response.json()
 
 
+async def list_received_emails(campaign_id: str) -> list[dict]:
+    """
+    Pull received-email entries for a campaign from PlusVibe's unibox.
+
+    Used by the unibox poller as the trigger source for replies — independent
+    of PlusVibe's `LEAD_MARKED_AS_INTERESTED` tagging, which can lag or be
+    disabled on a campaign. Each entry includes id, lead, lead_id, subject,
+    body.html, eaccount, label, timestamp_created.
+    """
+    headers = {"x-api-key": API_KEY}
+    params = {
+        "workspace_id": WORKSPACE_ID,
+        "campaign_id": campaign_id,
+        "email_type": "received",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/unibox/emails",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            return response.json().get("data") or []
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"list_received_emails failed ({campaign_id}): {e}")
+        return []
+
+
+async def get_lead_data(email: str, campaign_id: Optional[str] = None) -> Optional[dict]:
+    """
+    Fetch a lead's record (first_name/last_name/company_name/company_website/etc).
+
+    PlusVibe returns one row per (lead, campaign) tuple. If `campaign_id` is
+    given, prefer the matching row; otherwise return the first.
+    """
+    if not email:
+        return None
+    headers = {"x-api-key": API_KEY}
+    params = {"workspace_id": WORKSPACE_ID, "email": email}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/lead/get",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            rows = response.json()
+        if not isinstance(rows, list) or not rows:
+            return None
+        if campaign_id:
+            for r in rows:
+                if r.get("campaign") == campaign_id or r.get("campaign_id") == campaign_id:
+                    return r.get("lead_data") or {}
+        return rows[0].get("lead_data") or {}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"get_lead_data failed ({email}): {e}")
+        return None
+
+
 async def get_campaign_stats(campaign_id: str, start_date: str, end_date: str) -> Optional[dict]:
     """
     Pull aggregate stats for a campaign over a date window.
