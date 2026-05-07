@@ -27,6 +27,16 @@ from src.integrations.sheets import (
 from src.crm_commands import parse_slack_command, execute_crm_command, add_nurture_schedule
 from src.reports import generate_weekly_report, generate_monthly_report
 from src.deliverability import check_deliverability, check_daily_recovery, check_weekly_deliverability_summary
+from src.daily_report import (
+    check_and_fire_daily as send_report_check_and_fire,
+    generate_daily_send_report,
+    generate_weekly_send_report,
+    get_ramp_start,
+    set_ramp_start,
+    current_week_index,
+    current_daily_limit,
+)
+from src.integrations.plusvibe import get_campaign_stats as _get_campaign_stats
 from src.integrations.slack import (
     verify_slack_signature,
     post_review_message,
@@ -55,6 +65,8 @@ from src.learning import (
     get_pending,
     delete_pending,
     get_few_shot_examples,
+    bump_daily_classification,
+    record_booked_call,
 )
 from src.followup import (
     schedule_followups,
@@ -78,6 +90,7 @@ async def lifespan(app: FastAPI):
     _followup_task = asyncio.create_task(_followup_scheduler())
     asyncio.create_task(_beehiiv_retry_scheduler())
     asyncio.create_task(_reports_scheduler())
+    asyncio.create_task(_send_report_poller())
     yield
     _followup_task.cancel()
     log.info("Inbox Management Agent shutting down")
@@ -167,6 +180,10 @@ async def _process_reply(payload: dict):
         reply_type = classification["reply_type"]
         meta = get_reply_type_meta(reply_type)
         log.info(f"Classified as: {reply_type} (confidence: {classification['confidence']})")
+        try:
+            bump_daily_classification(reply_type)
+        except Exception:
+            log.exception("bump_daily_classification failed")
 
         # 4. Handle no-draft types immediately
         if meta.get("no_draft"):
@@ -374,6 +391,12 @@ async def _process_meeting_booked(payload: dict) -> None:
         # Post to Slack with outcome buttons
         post_call_booked_message(name=name, company=company, email=email, campaign=campaign)
         log.info(f"Meeting booked processed for {email}")
+
+        # Record for daily send-report
+        try:
+            record_booked_call(name=name, email=email, company=company)
+        except Exception:
+            log.exception("record_booked_call failed")
 
     except Exception as e:
         log.exception(f"Meeting booked processing error: {e}")
@@ -795,6 +818,32 @@ async def _reports_scheduler():
             log.exception(f"Reports scheduler error: {e}")
 
 
+# ── Send-report poller (daily + weekly campaign report) ──────────────────────
+
+async def _send_report_poller():
+    """
+    Every 15 min during the sending window, ping PlusVibe stats and fire the
+    daily report once today's sent_count goes idle (i.e., sending is done).
+
+    Weekly report fires inside `check_and_fire_daily` once the daily for day-7
+    has gone out, so this loop is the single trigger surface for both.
+    """
+    log.info("Send-report poller started")
+    EST = ZoneInfo("America/New_York")
+    while True:
+        try:
+            await asyncio.sleep(15 * 60)
+            import datetime as _dt
+            hour = _dt.datetime.now(EST).hour
+            if hour < 9 or hour > 23:
+                continue
+            await send_report_check_and_fire(CAMPAIGN_2_WEEKS_MAY)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.exception(f"Send-report poller error: {e}")
+
+
 # ── Slack Events API (bot @mentions for CRM commands) ────────────────────────
 
 @app.post("/webhook/slack/events")
@@ -905,6 +954,56 @@ async def admin_beehiiv_queue():
     from src.integrations.beehiiv import get_retry_queue
     queue = get_retry_queue()
     return {"count": len(queue), "leads": queue}
+
+
+@app.get("/admin/ramp-state")
+async def admin_ramp_state():
+    """Inspect the volume ramp anchor + computed week/limit for today."""
+    cid = CAMPAIGN_2_WEEKS_MAY
+    start = get_ramp_start(cid)
+    return {
+        "campaign_id": cid,
+        "ramp_start": start.isoformat(),
+        "today": date.today().isoformat(),
+        "current_week": current_week_index(cid),
+        "expected_daily_limit_per_mailbox": current_daily_limit(cid),
+    }
+
+
+@app.post("/admin/ramp-state")
+async def admin_set_ramp_state(request: Request):
+    """Override the ramp anchor date (JSON: {\"start\": \"YYYY-MM-DD\"})."""
+    body = await request.json()
+    raw = body.get("start") if isinstance(body, dict) else None
+    if not raw:
+        return JSONResponse({"error": "missing 'start' (YYYY-MM-DD)"}, status_code=400)
+    try:
+        d = date.fromisoformat(raw)
+    except Exception:
+        return JSONResponse({"error": "invalid date format, expected YYYY-MM-DD"}, status_code=400)
+    set_ramp_start(CAMPAIGN_2_WEEKS_MAY, d)
+    return {"ok": True, "campaign_id": CAMPAIGN_2_WEEKS_MAY, "ramp_start": d.isoformat()}
+
+
+@app.post("/admin/send-report-now")
+async def admin_send_report_now(request: Request):
+    """
+    Manually trigger the daily send-report (bypasses the idle-detection gate).
+
+    Optional JSON: {"weekly": true} to also fire the weekly summary.
+    """
+    cid = CAMPAIGN_2_WEEKS_MAY
+    today = date.today()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    stats = await _get_campaign_stats(cid, today.isoformat(), today.isoformat()) or {}
+    await generate_daily_send_report(cid, today, stats)
+    if isinstance(body, dict) and body.get("weekly"):
+        week_start = today - timedelta(days=6)
+        await generate_weekly_send_report(cid, week_start, today)
+    return {"ok": True, "campaign_id": cid, "day": today.isoformat()}
 
 
 @app.post("/admin/test-slack")

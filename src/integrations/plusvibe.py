@@ -237,6 +237,76 @@ async def get_workspaces() -> dict:
         return response.json()
 
 
+async def get_campaign_stats(campaign_id: str, start_date: str, end_date: str) -> Optional[dict]:
+    """
+    Pull aggregate stats for a campaign over a date window.
+
+    Dates are YYYY-MM-DD. The endpoint returns a list; we expect a single row
+    keyed by campaign_id. Fields used downstream:
+      sent_count, replied_count, positive_reply_count, bounced_count,
+      unsubscribed_count, unique_opened_count, lead_contacted_count.
+    """
+    headers = {"x-api-key": API_KEY}
+    params = {
+        "workspace_id": WORKSPACE_ID,
+        "campaign_id": campaign_id,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/campaign/stats",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            rows = response.json()
+            if isinstance(rows, list) and rows:
+                return rows[0]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Campaign stats fetch failed ({campaign_id}): {e}")
+    return None
+
+
+async def list_campaign_mailboxes(campaign_id: str) -> list[dict]:
+    """
+    Return mailboxes (sending accounts) attached to a campaign.
+
+    Each entry: {email, daily_limit, status, warmup_status}.
+    Filtering by `cmps[].id == campaign_id`. Note the `/account/list` payload
+    sometimes returns accounts with empty `cmps` — those are filtered out.
+    """
+    headers = {"x-api-key": API_KEY}
+    params = {"workspace_id": WORKSPACE_ID}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/account/list",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+        accounts = data.get("accounts", []) if isinstance(data, dict) else []
+        result = []
+        for a in accounts:
+            cmps = a.get("cmps") or []
+            if any((c.get("id") or c.get("_id")) == campaign_id for c in cmps):
+                result.append({
+                    "email": a.get("email", ""),
+                    "daily_limit": a.get("daily_limit"),
+                    "status": a.get("status", ""),
+                    "warmup_status": a.get("warmup_status", ""),
+                })
+        return result
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"list_campaign_mailboxes failed ({campaign_id}): {e}")
+        return []
+
+
 async def register_webhook(url: str, events: list[str] | None = None) -> dict:
     """Register our Railway URL as a PlusVibe webhook."""
     if events is None:

@@ -143,6 +143,77 @@ def get_high_edit_rate_types() -> list[dict]:
     return results
 
 
+# ── Daily classification + booking counters (for send-report) ────────────────
+
+# Used by daily/weekly send-report so we can compute "reply rate excluding OOO"
+# and list booked calls for the day. 30-day TTL on each key.
+_DAILY_TTL_SEC = 60 * 60 * 24 * 30
+
+
+def bump_daily_classification(reply_type: str, day: Optional[str] = None) -> None:
+    """Increment daily counters: total replies + per-type (esp. auto_reply)."""
+    if day is None:
+        from datetime import date
+        day = date.today().isoformat()
+    r = _get_redis()
+    total_key = f"stats:daily:{day}:total_replies"
+    type_key  = f"stats:daily:{day}:type:{reply_type}"
+    r.incr(total_key)
+    r.expire(total_key, _DAILY_TTL_SEC)
+    r.incr(type_key)
+    r.expire(type_key, _DAILY_TTL_SEC)
+
+
+def get_daily_classification_counts(day: str) -> dict:
+    """Return {total, auto_reply, by_type: {...}} for the given YYYY-MM-DD."""
+    r = _get_redis()
+    total = int(r.get(f"stats:daily:{day}:total_replies") or 0)
+    by_type: dict[str, int] = {}
+    cursor = 0
+    prefix = f"stats:daily:{day}:type:"
+    while True:
+        cursor, keys = r.scan(cursor, match=f"{prefix}*", count=100)
+        for k in keys:
+            rt = k[len(prefix):]
+            by_type[rt] = int(r.get(k) or 0)
+        if cursor == 0:
+            break
+    return {
+        "total": total,
+        "auto_reply": by_type.get("auto_reply", 0),
+        "by_type": by_type,
+    }
+
+
+def record_booked_call(name: str, email: str, company: str, day: Optional[str] = None) -> None:
+    """Append a booked-call record to the day's list (used by daily send-report)."""
+    if day is None:
+        from datetime import date
+        day = date.today().isoformat()
+    r = _get_redis()
+    key = f"booked:daily:{day}"
+    r.rpush(key, json.dumps({
+        "name": name or "",
+        "email": email or "",
+        "company": company or "",
+        "ts": int(time.time()),
+    }))
+    r.expire(key, _DAILY_TTL_SEC)
+
+
+def get_booked_calls(day: str) -> list[dict]:
+    """Return list of {name, email, company, ts} booked on the given YYYY-MM-DD."""
+    r = _get_redis()
+    items = r.lrange(f"booked:daily:{day}", 0, -1) or []
+    out: list[dict] = []
+    for raw in items:
+        try:
+            out.append(json.loads(raw))
+        except Exception:
+            continue
+    return out
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _compute_diff(original: str, edited: str) -> str:
