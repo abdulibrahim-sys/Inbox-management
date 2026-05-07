@@ -191,7 +191,7 @@ async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -
         camp_name = stats.get("camp_name") or campaign_id
 
         reply_rate = _pct(replied, sent)
-        positive_rate = _pct(positive, sent)
+        positive_rate = _pct(positive, replied)  # % of replies that are positive
         bounce_rate = _pct(bounced, sent)
 
         booked = get_booked_calls(day.isoformat())
@@ -215,7 +215,7 @@ async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -
             f"  • Ramp: week {week} → expected {current_daily_limit(campaign_id, day)}/mailbox/day\n\n"
             f"*Replies* _(PlusVibe campaign stats)_\n"
             f"  • Reply rate: *{reply_rate}%* ({replied} of {sent}) — {_flag(reply_rate, sent)}\n"
-            f"  • Positive reply rate: *{positive_rate}%* ({positive} positive)\n"
+            f"  • Positive reply rate: *{positive_rate}%* ({positive} of {replied} replies)\n"
             f"  • Bounces: {bounced} ({bounce_rate}%)\n\n"
             f"{booked_section}"
         )
@@ -239,7 +239,7 @@ async def generate_weekly_send_report(campaign_id: str, week_start: date, week_e
         camp_name = stats.get("camp_name") or campaign_id
 
         reply_rate = _pct(replied, sent)
-        positive_rate = _pct(positive, sent)
+        positive_rate = _pct(positive, replied)  # % of replies that are positive
         bounce_rate = _pct(bounced, sent)
 
         current_week = current_week_index(campaign_id, week_end)
@@ -251,7 +251,7 @@ async def generate_weekly_send_report(campaign_id: str, week_start: date, week_e
             f"*Totals (7 days)* _(PlusVibe campaign stats)_\n"
             f"  • Emails sent: {sent}\n"
             f"  • Reply rate: *{reply_rate}%* ({replied} of {sent}) — {_flag(reply_rate, sent)}\n"
-            f"  • Positive reply rate: *{positive_rate}%* ({positive} positive)\n"
+            f"  • Positive reply rate: *{positive_rate}%* ({positive} of {replied} replies)\n"
             f"  • Bounces: {bounced} ({bounce_rate}%)\n\n"
             f"*Volume ramp reminder*\n"
             f"  • Week {current_week} complete — current daily_limit was {current_week}/mailbox/day\n"
