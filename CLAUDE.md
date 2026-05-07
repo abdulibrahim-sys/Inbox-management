@@ -81,12 +81,13 @@ Stay pragmatic. Stay reliable. Keep learning.
 ### Campaigns
 | Campaign | ID | Slack Channel | Classifier | Drafter |
 |---|---|---|---|---|
-| 2 Weeks (Trendfeed) | `69971f0aefa0db65892f6b37` | `#inbox-agent-reply` (`C0AJG9V9JSE`) | `src/classifier.py` | `src/drafter.py` |
-| Ad Creative Offer | `69e5f93e9aaf180271922b71` | `#inbox-agent-reply-ad-creatives` (`C0AP56KJKV2`) | `src/classifier.py` | `src/drafter.py` |
+| 2 weeks - May [Outlook] | `69fb3fa29465cdb03f8c811f` | `#inbox-agent-reply` (`C0AJG9V9JSE`) | `src/classifier.py` | `src/drafter.py` |
+
+Older campaigns (2 Weeks Trendfeed `69971f0aefa0db65892f6b37`, Ad Creative Offer `69e5f93e9aaf180271922b71`) are inactive. Add new campaigns as constants in `main.py` when they go live.
 
 ### Reply Agent Rules
-- Handle `LEAD_MARKED_AS_INTERESTED` for both 2 Weeks and Ad Creative Offer campaigns
-- Routing: `_slack_channel_for_campaign(campaign_id)` in `main.py` maps campaign ID → Slack channel
+- Handle `LEAD_MARKED_AS_INTERESTED` for the active campaign(s) listed above
+- All approved replies post to `SLACK_CHANNEL_ID` (`#inbox-agent-reply`)
 - First reply: no case studies; follow-ups may include them
 - Responses: 60–100 words, handle objection first, pivot to call with "You can grab a time here 👉 [link]"
 - Own Trendfeed's cold emails — never disclaim or distance from them

@@ -43,16 +43,9 @@ from src.integrations.slack import (
     SLACK_CHANNEL_ID,
 )
 
-# ── Campaign → Slack channel routing ─────────────────────────────────────────
-CAMPAIGN_2_WEEKS      = "69971f0aefa0db65892f6b37"
-CAMPAIGN_AD_CREATIVES = "69e5f93e9aaf180271922b71"
-SLACK_CHANNEL_AD_CREATIVES = os.getenv("SLACK_CHANNEL_AD_CREATIVES", "C0AP56KJKV2")
-
-
-def _slack_channel_for_campaign(campaign_id: str) -> str:
-    if campaign_id == CAMPAIGN_AD_CREATIVES:
-        return SLACK_CHANNEL_AD_CREATIVES
-    return SLACK_CHANNEL_ID
+# ── Active campaigns (PlusVibe) ──────────────────────────────────────────────
+# All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply).
+CAMPAIGN_2_WEEKS_MAY = "69fb3fa29465cdb03f8c811f"  # "2 weeks - May [Outlook]"
 from src.classifier import classify_reply, get_reply_type_meta
 from src.drafter import draft_response, compute_diff
 from src.scraper import scrape_and_classify
@@ -221,7 +214,7 @@ async def _process_reply(payload: dict):
         elif reply_type == "uncategorised":
             flag_reason = "Uncategorised — potential new template"
 
-        slack_channel = _slack_channel_for_campaign(reply.campaign_id or "")
+        slack_channel = SLACK_CHANNEL_ID
         slack_ts = post_review_message(
             email_id=record_id,
             first_name=reply.first_name or "",
@@ -916,18 +909,15 @@ async def admin_beehiiv_queue():
 
 @app.post("/admin/test-slack")
 async def admin_test_slack():
-    """Fire a test message to both campaign Slack channels to verify connectivity."""
+    """Fire a test message to the reply Slack channel to verify connectivity."""
     from src.integrations.slack import SLACK_CHANNEL_ID
     from slack_sdk import WebClient as _WC
     _sc = _WC(token=os.getenv("SLACK_BOT_TOKEN", ""))
-    results = {}
-    for label, channel in [("2_weeks", SLACK_CHANNEL_ID), ("ad_creatives", SLACK_CHANNEL_AD_CREATIVES)]:
-        try:
-            r = _sc.chat_postMessage(channel=channel, text=f"✅ Test message — inbox agent is alive and routing to this channel ({label})")
-            results[label] = {"ok": True, "ts": r["ts"], "channel": channel}
-        except Exception as e:
-            results[label] = {"ok": False, "error": str(e), "channel": channel}
-    return results
+    try:
+        r = _sc.chat_postMessage(channel=SLACK_CHANNEL_ID, text="✅ Test message — inbox agent is alive and routing to this channel")
+        return {"ok": True, "ts": r["ts"], "channel": SLACK_CHANNEL_ID}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "channel": SLACK_CHANNEL_ID}
 
 
 @app.get("/admin/last-webhook")
