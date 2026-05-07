@@ -1125,20 +1125,28 @@ async def admin_send_report_now(request: Request):
     """
     Manually trigger the daily send-report (bypasses the idle-detection gate).
 
-    Optional JSON: {"weekly": true} to also fire the weekly summary.
+    Optional JSON:
+      {"day": "YYYY-MM-DD"}  — report for a specific day (default: today)
+      {"weekly": true}       — also fire the weekly summary
     """
     cid = CAMPAIGN_2_WEEKS_MAY
-    today = date.today()
     try:
         body = await request.json()
     except Exception:
         body = {}
-    stats = await _get_campaign_stats(cid, today.isoformat(), today.isoformat()) or {}
-    await generate_daily_send_report(cid, today, stats)
+    target = date.today()
+    raw_day = body.get("day") if isinstance(body, dict) else None
+    if raw_day:
+        try:
+            target = date.fromisoformat(raw_day)
+        except Exception:
+            return JSONResponse({"error": "invalid 'day' (expected YYYY-MM-DD)"}, status_code=400)
+    stats = await _get_campaign_stats(cid, target.isoformat(), target.isoformat()) or {}
+    await generate_daily_send_report(cid, target, stats)
     if isinstance(body, dict) and body.get("weekly"):
-        week_start = today - timedelta(days=6)
-        await generate_weekly_send_report(cid, week_start, today)
-    return {"ok": True, "campaign_id": cid, "day": today.isoformat()}
+        week_start = target - timedelta(days=6)
+        await generate_weekly_send_report(cid, week_start, target)
+    return {"ok": True, "campaign_id": cid, "day": target.isoformat()}
 
 
 @app.post("/admin/test-slack")
