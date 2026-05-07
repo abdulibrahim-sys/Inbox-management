@@ -29,8 +29,8 @@ from typing import Optional
 from slack_sdk import WebClient
 from upstash_redis import Redis
 
-from src.integrations.plusvibe import get_campaign_stats, list_campaign_mailboxes
-from src.learning import get_booked_calls, get_daily_classification_counts
+from src.integrations.plusvibe import get_campaign_stats
+from src.learning import get_booked_calls
 
 log = logging.getLogger(__name__)
 
@@ -170,12 +170,19 @@ def _flag(reply_rate_pct: float, sent: int) -> str:
     return "🔴 alert — likely deliverability issue (under 0.8%)"
 
 
-def _safe_pct(num: int, denom: int) -> float:
-    return round((num / denom) * 100, 2) if denom > 0 else 0.0
+def _pct(num: int, denom: int) -> float:
+    """Reply-rate style percent rounded to 1 decimal to match PlusVibe display."""
+    return round((num / denom) * 100, 1) if denom > 0 else 0.0
 
 
 async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -> None:
-    """Compose and post the daily send/reply summary to Slack."""
+    """
+    Post the daily send/reply summary to Slack.
+
+    Reply rate matches PlusVibe (`replied_count / sent_count`, 1-decimal),
+    so the headline number always agrees with the dashboard. The OOO-excluded
+    rate is shown underneath as the engagement-quality signal.
+    """
     try:
         sent = int(stats.get("sent_count") or 0)
         replied = int(stats.get("replied_count") or 0)
@@ -183,37 +190,9 @@ async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -
         bounced = int(stats.get("bounced_count") or 0)
         camp_name = stats.get("camp_name") or campaign_id
 
-        cls = get_daily_classification_counts(day.isoformat())
-        ooo = int(cls.get("auto_reply") or 0)
-        replied_excl_ooo = max(replied - ooo, 0)
-        reply_rate = _safe_pct(replied_excl_ooo, sent)
-        positive_rate = _safe_pct(positive, sent)
-        bounce_rate = _safe_pct(bounced, sent)
-
-        mailboxes = await list_campaign_mailboxes(campaign_id)
-        expected_limit = current_daily_limit(campaign_id, day)
-        active = [m for m in mailboxes if (m.get("status") or "").upper() == "ACTIVE"]
-        expected_total = len(active) * expected_limit
-        if expected_total:
-            diff = sent - expected_total
-            if diff == 0:
-                diff_note = "✅ matches expected"
-            elif diff > 0:
-                diff_note = f"⚠️ {diff} above expected ({expected_total})"
-            else:
-                diff_note = f"⚠️ {-diff} below expected ({expected_total})"
-        else:
-            diff_note = "no expected baseline (no active mailboxes attached)"
-
-        if mailboxes:
-            mb_lines = "\n".join(
-                f"  • `{m['email']}` — limit {m.get('daily_limit') if m.get('daily_limit') is not None else '?'}/day · {m.get('status', '')}"
-                for m in mailboxes[:20]
-            )
-            if len(mailboxes) > 20:
-                mb_lines += f"\n  • …and {len(mailboxes) - 20} more"
-        else:
-            mb_lines = "  • _no mailboxes attached to this campaign in PlusVibe_"
+        reply_rate = _pct(replied, sent)
+        positive_rate = _pct(positive, sent)
+        bounce_rate = _pct(bounced, sent)
 
         booked = get_booked_calls(day.isoformat())
         if booked:
@@ -232,14 +211,10 @@ async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -
             f"*Daily Send Report — {camp_name}*\n"
             f"_{date_label}_\n\n"
             f"*Volume*\n"
-            f"  • Sent today: *{sent}* ({diff_note})\n"
-            f"  • Active mailboxes: {len(active)} of {len(mailboxes)} attached\n"
-            f"  • Ramp: week {week} → expected {expected_limit}/mailbox/day\n"
-            f"{mb_lines}\n\n"
-            f"*Replies*\n"
-            f"  • Total replies: {replied}  (OOO/auto: {ooo})\n"
-            f"  • Replies excl. OOO: {replied_excl_ooo}\n"
-            f"  • Reply rate (excl. OOO): *{reply_rate}%* — {_flag(reply_rate, sent)}\n"
+            f"  • Emails sent: *{sent}*\n"
+            f"  • Ramp: week {week} → expected {current_daily_limit(campaign_id, day)}/mailbox/day\n\n"
+            f"*Replies* _(PlusVibe campaign stats)_\n"
+            f"  • Reply rate: *{reply_rate}%* ({replied} of {sent}) — {_flag(reply_rate, sent)}\n"
             f"  • Positive reply rate: *{positive_rate}%* ({positive} positive)\n"
             f"  • Bounces: {bounced} ({bounce_rate}%)\n\n"
             f"{booked_section}"
@@ -263,16 +238,9 @@ async def generate_weekly_send_report(campaign_id: str, week_start: date, week_e
         bounced = int(stats.get("bounced_count") or 0)
         camp_name = stats.get("camp_name") or campaign_id
 
-        ooo_total = 0
-        d = week_start
-        while d <= week_end:
-            ooo_total += int(get_daily_classification_counts(d.isoformat()).get("auto_reply") or 0)
-            d += timedelta(days=1)
-
-        replied_excl_ooo = max(replied - ooo_total, 0)
-        reply_rate = _safe_pct(replied_excl_ooo, sent)
-        positive_rate = _safe_pct(positive, sent)
-        bounce_rate = _safe_pct(bounced, sent)
+        reply_rate = _pct(replied, sent)
+        positive_rate = _pct(positive, sent)
+        bounce_rate = _pct(bounced, sent)
 
         current_week = current_week_index(campaign_id, week_end)
         next_limit = current_week + 1
@@ -280,11 +248,9 @@ async def generate_weekly_send_report(campaign_id: str, week_start: date, week_e
         text = (
             f"*Weekly Send Report — {camp_name}*\n"
             f"_Week {current_week}: {week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}_\n\n"
-            f"*Totals (7 days)*\n"
-            f"  • Sent: {sent}\n"
-            f"  • Replies: {replied} (OOO/auto: {ooo_total})\n"
-            f"  • Replies excl. OOO: {replied_excl_ooo}\n"
-            f"  • Reply rate (excl. OOO): *{reply_rate}%* — {_flag(reply_rate, sent)}\n"
+            f"*Totals (7 days)* _(PlusVibe campaign stats)_\n"
+            f"  • Emails sent: {sent}\n"
+            f"  • Reply rate: *{reply_rate}%* ({replied} of {sent}) — {_flag(reply_rate, sent)}\n"
             f"  • Positive reply rate: *{positive_rate}%* ({positive} positive)\n"
             f"  • Bounces: {bounced} ({bounce_rate}%)\n\n"
             f"*Volume ramp reminder*\n"
