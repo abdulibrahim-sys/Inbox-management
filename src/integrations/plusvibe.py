@@ -239,12 +239,16 @@ async def get_workspaces() -> dict:
 
 async def list_received_emails(campaign_id: str) -> list[dict]:
     """
-    Pull received-email entries for a campaign from PlusVibe's unibox.
+    Pull the latest page of received-email entries from PlusVibe's unibox.
 
     Used by the unibox poller as the trigger source for replies — independent
     of PlusVibe's `LEAD_MARKED_AS_INTERESTED` tagging, which can lag or be
     disabled on a campaign. Each entry includes id, lead, lead_id, subject,
     body.html, eaccount, label, timestamp_created.
+
+    Single page only; the poller dedups via Redis and is called every 2 min
+    so the newest page is enough. For full historical pulls (e.g. counting
+    today's meeting-booked leads), use `list_received_emails_paginated`.
     """
     headers = {"x-api-key": API_KEY}
     params = {
@@ -265,6 +269,64 @@ async def list_received_emails(campaign_id: str) -> list[dict]:
         import logging
         logging.getLogger(__name__).error(f"list_received_emails failed ({campaign_id}): {e}")
         return []
+
+
+async def list_received_emails_paginated(
+    campaign_id: str,
+    label: Optional[str] = None,
+    stop_before_iso: Optional[str] = None,
+    max_pages: int = 50,
+) -> list[dict]:
+    """
+    Walk every page of received emails for a campaign, optionally filtered by
+    `label` (MEETING_BOOKED, INTERESTED, OUT_OF_OFFICE, AUTOMATIC_REPLY, ...).
+
+    Pages are sorted newest-first by `timestamp_created`. If `stop_before_iso`
+    is set (YYYY-MM-DD or full ISO), we stop pagination as soon as a page's
+    oldest entry is older than that cutoff — cheap way to get "today only".
+    """
+    headers = {"x-api-key": API_KEY}
+    base_params: dict = {
+        "workspace_id": WORKSPACE_ID,
+        "campaign_id": campaign_id,
+        "email_type": "received",
+    }
+    if label:
+        base_params["label"] = label
+
+    results: list[dict] = []
+    cursor: Optional[str] = None
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            for _ in range(max_pages):
+                params = dict(base_params)
+                if cursor:
+                    params["page_trail"] = cursor
+                response = await client.get(
+                    f"{PLUSVIBE_BASE}/unibox/emails",
+                    headers=headers,
+                    params=params,
+                )
+                response.raise_for_status()
+                payload = response.json() or {}
+                page = payload.get("data") or []
+                if not page:
+                    break
+                results.extend(page)
+                if stop_before_iso:
+                    oldest = min((p.get("timestamp_created") or "") for p in page)
+                    if oldest and oldest < stop_before_iso:
+                        break
+                next_cursor = payload.get("page_trail")
+                if not next_cursor or next_cursor == cursor:
+                    break
+                cursor = next_cursor
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(
+            f"list_received_emails_paginated failed ({campaign_id}, label={label}): {e}"
+        )
+    return results
 
 
 async def get_lead_data(email: str, campaign_id: Optional[str] = None) -> Optional[dict]:

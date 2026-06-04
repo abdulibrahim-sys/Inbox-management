@@ -44,7 +44,6 @@ from src.integrations.slack import (
     open_edit_modal,
     update_message_approved,
     update_message_edited_sent,
-    post_unsubscribe_alert,
     post_followup_review,
     open_followup_edit_modal,
     update_message_draft_saved,
@@ -187,17 +186,10 @@ async def _process_reply(payload: dict):
         except Exception:
             log.exception("bump_daily_classification failed")
 
-        # 4. Handle no-draft types immediately
+        # 4. Handle no-draft types immediately (silent — channel only shows
+        # positive replies + meeting-booked notifications per product spec)
         if meta.get("no_draft"):
-            if reply_type == "unsubscribe":
-                post_unsubscribe_alert(
-                    reply.first_name or "",
-                    reply.last_name or "",
-                    reply.company_name or "",
-                    reply.from_email,
-                )
-            else:
-                log.info(f"Skipping draft for reply type: {reply_type}")
+            log.info(f"Skipping draft for reply type: {reply_type}")
             return
 
         # 5. Scrape website if needed
@@ -860,6 +852,9 @@ async def _unibox_poller():
     log.info("Unibox poller started")
     from src.learning import _get_redis
     SEEN_TTL = 60 * 60 * 24 * 30  # 30 days
+    # Slack channel only surfaces positive replies + meeting-booked notifications;
+    # other labels are still marked seen so we don't loop them, but skip dispatch.
+    DISPATCH_LABELS = {"INTERESTED", "MEETING_BOOKED"}
     # Initial 30s grace so other startup tasks settle
     await asyncio.sleep(30)
     while True:
@@ -868,6 +863,7 @@ async def _unibox_poller():
             if emails:
                 r = _get_redis()
                 processed = 0
+                skipped_by_label = 0
                 for e in emails:
                     eid = str(e.get("id") or "")
                     if not eid:
@@ -875,6 +871,14 @@ async def _unibox_poller():
                     seen_key = f"unibox:seen:{eid}"
                     if r.get(seen_key):
                         continue
+                    label = (e.get("label") or "").upper()
+                    # Mark seen first so a crash mid-process doesn't loop us
+                    r.set(seen_key, "1", ex=SEEN_TTL)
+
+                    if label and label not in DISPATCH_LABELS:
+                        skipped_by_label += 1
+                        continue
+
                     payload = _unibox_to_webhook_payload(e)
                     # Enrich with lead_data (first/last name, company, website)
                     try:
@@ -887,12 +891,17 @@ async def _unibox_poller():
                         })
                     except Exception:
                         log.exception(f"lead_data lookup failed for {payload['data'].get('email')}")
-                    # Mark seen first so a crash mid-process doesn't loop us
-                    r.set(seen_key, "1", ex=SEEN_TTL)
-                    asyncio.create_task(_process_reply(payload))
+
+                    if label == "MEETING_BOOKED":
+                        # Webhook-miss safety net — route to the meeting-booked handler
+                        asyncio.create_task(_process_meeting_booked(payload))
+                    else:
+                        asyncio.create_task(_process_reply(payload))
                     processed += 1
-                if processed:
-                    log.info(f"Unibox poller dispatched {processed} new reply/replies")
+                if processed or skipped_by_label:
+                    log.info(
+                        f"Unibox poller: dispatched {processed}, skipped {skipped_by_label} by label"
+                    )
             await asyncio.sleep(120)
         except asyncio.CancelledError:
             break
@@ -920,7 +929,7 @@ def _unibox_to_webhook_payload(email: dict) -> dict:
             "email":                   email.get("from_address_email") or email.get("lead") or "",
             "actual_replied_from":     to_email,
             "campaign_id":             email.get("campaign_id") or "",
-            "campaign_name":           "2 weeks - May [Outlook]",
+            "campaign_name":           "2 weeks - June[Outlook]",
             "last_lead_reply_subject": email.get("subject") or "",
             "last_lead_reply":         body_text,
         },
