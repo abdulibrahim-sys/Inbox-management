@@ -56,7 +56,7 @@ from src.integrations.slack import (
 
 # ── Active campaigns (PlusVibe) ──────────────────────────────────────────────
 # All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply).
-CAMPAIGN_2_WEEKS_MAY = "69fb3fa29465cdb03f8c811f"  # "2 weeks - May [Outlook]"
+CAMPAIGN_2_WEEKS_JUNE = "6a2033c867e914c9dffb36fd"  # "2 weeks - June[Outlook]"
 from src.classifier import classify_reply, get_reply_type_meta
 from src.drafter import draft_response, compute_diff
 from src.scraper import scrape_and_classify
@@ -839,7 +839,7 @@ async def _send_report_poller():
             hour = _dt.datetime.now(EST).hour
             if hour < 9 or hour > 23:
                 continue
-            await send_report_check_and_fire(CAMPAIGN_2_WEEKS_MAY)
+            await send_report_check_and_fire(CAMPAIGN_2_WEEKS_JUNE)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -864,7 +864,7 @@ async def _unibox_poller():
     await asyncio.sleep(30)
     while True:
         try:
-            emails = await list_received_emails(CAMPAIGN_2_WEEKS_MAY)
+            emails = await list_received_emails(CAMPAIGN_2_WEEKS_JUNE)
             if emails:
                 r = _get_redis()
                 processed = 0
@@ -878,7 +878,7 @@ async def _unibox_poller():
                     payload = _unibox_to_webhook_payload(e)
                     # Enrich with lead_data (first/last name, company, website)
                     try:
-                        ld = await get_lead_data(payload["data"]["email"], CAMPAIGN_2_WEEKS_MAY) or {}
+                        ld = await get_lead_data(payload["data"]["email"], CAMPAIGN_2_WEEKS_JUNE) or {}
                         payload["data"].update({
                             "first_name":      ld.get("first_name") or "",
                             "last_name":       ld.get("last_name") or "",
@@ -1042,7 +1042,7 @@ async def admin_beehiiv_queue():
 @app.get("/admin/ramp-state")
 async def admin_ramp_state():
     """Inspect the volume ramp anchor + computed week/limit for today."""
-    cid = CAMPAIGN_2_WEEKS_MAY
+    cid = CAMPAIGN_2_WEEKS_JUNE
     start = get_ramp_start(cid)
     return {
         "campaign_id": cid,
@@ -1064,8 +1064,8 @@ async def admin_set_ramp_state(request: Request):
         d = date.fromisoformat(raw)
     except Exception:
         return JSONResponse({"error": "invalid date format, expected YYYY-MM-DD"}, status_code=400)
-    set_ramp_start(CAMPAIGN_2_WEEKS_MAY, d)
-    return {"ok": True, "campaign_id": CAMPAIGN_2_WEEKS_MAY, "ramp_start": d.isoformat()}
+    set_ramp_start(CAMPAIGN_2_WEEKS_JUNE, d)
+    return {"ok": True, "campaign_id": CAMPAIGN_2_WEEKS_JUNE, "ramp_start": d.isoformat()}
 
 
 @app.post("/admin/unibox-poll-now")
@@ -1081,7 +1081,7 @@ async def admin_unibox_poll_now(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    cid = CAMPAIGN_2_WEEKS_MAY
+    cid = CAMPAIGN_2_WEEKS_JUNE
     r = _get_redis()
     SEEN_TTL = 60 * 60 * 24 * 30
 
@@ -1129,7 +1129,7 @@ async def admin_send_report_now(request: Request):
       {"day": "YYYY-MM-DD"}  — report for a specific day (default: today)
       {"weekly": true}       — also fire the weekly summary
     """
-    cid = CAMPAIGN_2_WEEKS_MAY
+    cid = CAMPAIGN_2_WEEKS_JUNE
     try:
         body = await request.json()
     except Exception:
