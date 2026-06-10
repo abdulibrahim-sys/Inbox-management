@@ -392,6 +392,14 @@ async def _process_meeting_booked(payload: dict) -> None:
         except Exception:
             log.exception("record_booked_call failed")
 
+        # Subscribe to Beehiiv (safe to retry — API returns 409 if already on list)
+        try:
+            await subscribe_to_newsletter(
+                email=email, first_name=first_name, last_name=last_name
+            )
+        except Exception:
+            log.exception("Beehiiv subscribe failed for meeting-booked lead")
+
     except Exception as e:
         log.exception(f"Meeting booked processing error: {e}")
 
