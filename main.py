@@ -55,7 +55,13 @@ from src.integrations.slack import (
 
 # ── Active campaigns (PlusVibe) ──────────────────────────────────────────────
 # All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply).
-CAMPAIGN_2_WEEKS_JUNE = "6a2033c867e914c9dffb36fd"  # "2 weeks - June[Outlook]"
+CAMPAIGN_2_WEEKS_JUNE = "6a2033c867e914c9dffb36fd"      # "2 weeks - June[Outlook]" (paused)
+CAMPAIGN_AI_ARK_BIG_BRANDS = "6a4bb4325d0a8ff67b02b811"  # "Ai-ark-big brands - Copy"
+
+# The one campaign the reply agent + reports currently fire against. Update
+# this constant when swapping active campaigns — everything downstream
+# (unibox poller, send-report scheduler, admin endpoints) reads from here.
+CAMPAIGN_ACTIVE = CAMPAIGN_AI_ARK_BIG_BRANDS
 from src.classifier import classify_reply, get_reply_type_meta
 from src.drafter import draft_response, compute_diff
 from src.scraper import scrape_and_classify
@@ -839,7 +845,7 @@ async def _send_report_poller():
             hour = _dt.datetime.now(EST).hour
             if hour < 9 or hour > 23:
                 continue
-            await send_report_check_and_fire(CAMPAIGN_2_WEEKS_JUNE)
+            await send_report_check_and_fire(CAMPAIGN_ACTIVE)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -867,7 +873,7 @@ async def _unibox_poller():
     await asyncio.sleep(30)
     while True:
         try:
-            emails = await list_received_emails(CAMPAIGN_2_WEEKS_JUNE)
+            emails = await list_received_emails(CAMPAIGN_ACTIVE)
             if emails:
                 r = _get_redis()
                 processed = 0
@@ -890,7 +896,7 @@ async def _unibox_poller():
                     payload = _unibox_to_webhook_payload(e)
                     # Enrich with lead_data (first/last name, company, website)
                     try:
-                        ld = await get_lead_data(payload["data"]["email"], CAMPAIGN_2_WEEKS_JUNE) or {}
+                        ld = await get_lead_data(payload["data"]["email"], CAMPAIGN_ACTIVE) or {}
                         payload["data"].update({
                             "first_name":      ld.get("first_name") or "",
                             "last_name":       ld.get("last_name") or "",
@@ -937,7 +943,7 @@ def _unibox_to_webhook_payload(email: dict) -> dict:
             "email":                   email.get("from_address_email") or email.get("lead") or "",
             "actual_replied_from":     to_email,
             "campaign_id":             email.get("campaign_id") or "",
-            "campaign_name":           "2 weeks - June[Outlook]",
+            "campaign_name":           email.get("campaign_name") or "",
             "last_lead_reply_subject": email.get("subject") or "",
             "last_lead_reply":         body_text,
         },
@@ -1059,7 +1065,7 @@ async def admin_beehiiv_queue():
 @app.get("/admin/ramp-state")
 async def admin_ramp_state():
     """Inspect the volume ramp anchor + computed week/limit for today."""
-    cid = CAMPAIGN_2_WEEKS_JUNE
+    cid = CAMPAIGN_ACTIVE
     start = get_ramp_start(cid)
     return {
         "campaign_id": cid,
@@ -1081,8 +1087,8 @@ async def admin_set_ramp_state(request: Request):
         d = date.fromisoformat(raw)
     except Exception:
         return JSONResponse({"error": "invalid date format, expected YYYY-MM-DD"}, status_code=400)
-    set_ramp_start(CAMPAIGN_2_WEEKS_JUNE, d)
-    return {"ok": True, "campaign_id": CAMPAIGN_2_WEEKS_JUNE, "ramp_start": d.isoformat()}
+    set_ramp_start(CAMPAIGN_ACTIVE, d)
+    return {"ok": True, "campaign_id": CAMPAIGN_ACTIVE, "ramp_start": d.isoformat()}
 
 
 @app.post("/admin/unibox-poll-now")
@@ -1098,7 +1104,7 @@ async def admin_unibox_poll_now(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    cid = CAMPAIGN_2_WEEKS_JUNE
+    cid = CAMPAIGN_ACTIVE
     r = _get_redis()
     SEEN_TTL = 60 * 60 * 24 * 30
 
@@ -1146,7 +1152,7 @@ async def admin_send_report_now(request: Request):
       {"day": "YYYY-MM-DD"}  — report for a specific day (default: today)
       {"weekly": true}       — also fire the weekly summary
     """
-    cid = CAMPAIGN_2_WEEKS_JUNE
+    cid = CAMPAIGN_ACTIVE
     try:
         body = await request.json()
     except Exception:

@@ -39,6 +39,21 @@ log = logging.getLogger(__name__)
 DEFAULT_CAMPAIGN_START = "2026-05-07"  # "2 weeks - May [Outlook]" launches today
 SEND_REPORT_KEY_TTL = 60 * 60 * 24 * 30  # 30 days
 
+# ── Benchmarks (from the 2-weeks May campaign, n=134,836 sends) ──────────────
+# Frozen at analysis time — do not recompute from live data. These are the
+# reference rates the daily report compares against.
+BENCH_2WK_SENT = 134_836
+BENCH_2WK_REPLIES = 742
+BENCH_2WK_POSITIVE = 226
+BENCH_2WK_POS_PER_SEND_PCT = round(BENCH_2WK_POSITIVE / BENCH_2WK_SENT * 100, 4)  # 0.1676%
+BENCH_2WK_POS_OF_REPLY_PCT = round(BENCH_2WK_POSITIVE / BENCH_2WK_REPLIES * 100, 1)  # 30.5%
+BENCH_2WK_C_POS_PER_SEND_PCT = 0.2270  # winning variation
+
+# Success thresholds (from user spec)
+TARGET_POS_OF_REPLY_PCT = 20.0     # positive-of-reply target
+DELIVERABILITY_FLOOR_PCT = 2.0     # reply rate (incl. OOO) must stay ≥ this
+PROJECTION_DAILY_SENDS = 10_000    # what if we sent 10K/day
+
 _slack: Optional[WebClient] = None
 _redis: Optional[Redis] = None
 
@@ -133,6 +148,9 @@ async def check_and_fire_daily(campaign_id: str) -> Optional[str]:
       sent_today changed since last tick → clear quiet_since, update last_seen
       sent_today unchanged               → set quiet_since (if unset); fire when
                                            now - quiet_since ≥ 30 min
+      sent_today == 0 AND hour ≥ 20 EST  → fire an empty-day report anyway
+                                           (guarantees a daily post on
+                                           weekends / campaign-paused days)
     """
     today = date.today()
     day = today.isoformat()
@@ -150,7 +168,15 @@ async def check_and_fire_daily(campaign_id: str) -> Optional[str]:
     _set_with_ttl(_last_seen_key(campaign_id, day), str(sent_today))
 
     if sent_today <= 0:
-        # Nothing sent yet — don't start the quiet timer
+        # Nothing sent — post an EOD placeholder after 8pm EST so the
+        # channel still gets a daily heartbeat.
+        from zoneinfo import ZoneInfo
+        hour_est = datetime.now(ZoneInfo("America/New_York")).hour
+        if hour_est >= 20:
+            await generate_daily_send_report(campaign_id, today, stats)
+            _set_with_ttl(_daily_fired_key(campaign_id, day), "1")
+            await maybe_fire_weekly(campaign_id, today)
+            return day
         r.delete(quiet_since_key)
         return None
 
@@ -294,32 +320,147 @@ async def _booked_leads_today(campaign_id: str, day: date) -> list[dict]:
     return sorted(by_lead.values(), key=lambda x: x.get("ts", ""))
 
 
+async def _interested_leads_today(campaign_id: str, day: date) -> list[dict]:
+    """
+    Distinct leads whose latest INTERESTED reply landed today (EST). These are
+    prospects asking for a call, info, case studies, etc. — the positives that
+    haven't converted to MEETING_BOOKED yet. Returns [{name,email,company,subject,body_snippet}].
+    """
+    start_iso, end_iso = _day_bounds_utc_iso(day)
+    rows = await list_received_emails_paginated(
+        campaign_id, label="INTERESTED", stop_before_iso=start_iso
+    )
+
+    by_lead: dict[str, dict] = {}
+    for r in rows:
+        ts = r.get("timestamp_created") or ""
+        if not (start_iso <= ts < end_iso):
+            continue
+        lead_email = (r.get("from_address_email") or r.get("lead") or "").lower()
+        if not lead_email:
+            continue
+        prev = by_lead.get(lead_email)
+        if prev is None or ts > prev.get("ts", ""):
+            from_json = r.get("from_address_json") or []
+            display_name = ""
+            if isinstance(from_json, list) and from_json:
+                display_name = (from_json[0].get("name") or "").strip()
+            body_dict = r.get("body") or {}
+            body_text = (body_dict.get("text") if isinstance(body_dict, dict) else "") \
+                or r.get("content_preview") or ""
+            body_snippet = " ".join(body_text.split())[:220]
+            by_lead[lead_email] = {
+                "email": lead_email,
+                "name": display_name,
+                "ts": ts,
+                "subject": r.get("subject") or "",
+                "body_snippet": body_snippet,
+            }
+
+    from src.integrations.plusvibe import get_lead_data
+    import asyncio
+    emails = list(by_lead.keys())
+    leads_data = await asyncio.gather(
+        *(get_lead_data(e, campaign_id) for e in emails),
+        return_exceptions=True,
+    )
+    for email, ld in zip(emails, leads_data):
+        if isinstance(ld, dict):
+            first = ld.get("first_name") or ""
+            last = ld.get("last_name") or ""
+            full = f"{first} {last}".strip()
+            if full:
+                by_lead[email]["name"] = full
+            by_lead[email]["company"] = ld.get("company_name") or ""
+    return sorted(by_lead.values(), key=lambda x: x.get("ts", ""))
+
+
+def _projection_block(pos_per_send_pct: float, pos_of_reply_pct: float,
+                      reply_rate_incl_pct: float) -> str:
+    """
+    Project today's observed rates out to PROJECTION_DAILY_SENDS sends/day.
+    Reports what to expect at that scale under today's observed rates AND
+    under the 2-weeks C-variation winning rate for reference.
+    """
+    per_day_today = PROJECTION_DAILY_SENDS * pos_per_send_pct / 100.0
+    per_day_bench_c = PROJECTION_DAILY_SENDS * BENCH_2WK_C_POS_PER_SEND_PCT / 100.0
+    per_day_bench_blended = PROJECTION_DAILY_SENDS * BENCH_2WK_POS_PER_SEND_PCT / 100.0
+    replies_per_day = PROJECTION_DAILY_SENDS * reply_rate_incl_pct / 100.0
+    return (
+        f"*If we scale to {PROJECTION_DAILY_SENDS:,} sends/day*\n"
+        f"  • At *today's* positive rate ({pos_per_send_pct:.4f}%): "
+        f"~{per_day_today:.1f} positives/day → "
+        f"~{per_day_today*7:.0f}/wk → ~{per_day_today*30:.0f}/mo\n"
+        f"  • At the 2-weeks blended benchmark ({BENCH_2WK_POS_PER_SEND_PCT:.4f}%): "
+        f"~{per_day_bench_blended:.1f}/day → ~{per_day_bench_blended*30:.0f}/mo\n"
+        f"  • At the 2-weeks C winning rate ({BENCH_2WK_C_POS_PER_SEND_PCT:.4f}%): "
+        f"~{per_day_bench_c:.1f}/day → ~{per_day_bench_c*30:.0f}/mo\n"
+        f"  • Expected replies at 10K/day (incl. OOO): ~{replies_per_day:.0f}/day"
+    )
+
+
+def _benchmark_block(pos_per_send_pct: float, pos_of_reply_pct: float,
+                     replied_incl: int, sent: int) -> str:
+    """
+    Compare today's observed rates against the 2-weeks winning campaign on an
+    equal-sends basis. Rate-based comparison is scale-invariant.
+    """
+    # What 2-weeks would have produced on the SAME number of sends today
+    expected_pos_at_2wk = int(round(sent * BENCH_2WK_POS_PER_SEND_PCT / 100.0))
+    expected_replies_at_2wk = int(round(sent * (BENCH_2WK_REPLIES / BENCH_2WK_SENT * 100) / 100.0))
+
+    def _delta_arrow(observed, benchmark):
+        if observed >= benchmark: return "🟢"
+        if observed >= benchmark * 0.75: return "🟡"
+        return "🔴"
+
+    pos_delta = _delta_arrow(pos_per_send_pct, BENCH_2WK_POS_PER_SEND_PCT)
+    por_delta = _delta_arrow(pos_of_reply_pct, TARGET_POS_OF_REPLY_PCT)
+
+    return (
+        f"*Benchmark vs 2-weeks winner* _(on equal send volume)_\n"
+        f"  • Positive per send: *{pos_per_send_pct:.4f}%* today vs "
+        f"{BENCH_2WK_POS_PER_SEND_PCT:.4f}% (2-wk blended) / "
+        f"{BENCH_2WK_C_POS_PER_SEND_PCT:.4f}% (2-wk C winner) — {pos_delta}\n"
+        f"  • Positive of reply: *{pos_of_reply_pct:.1f}%* today vs "
+        f"target {TARGET_POS_OF_REPLY_PCT:.0f}% (2-wk actual {BENCH_2WK_POS_OF_REPLY_PCT}%) — {por_delta}\n"
+        f"  • On today's {sent} sends the 2-weeks winner would've produced "
+        f"~{expected_pos_at_2wk} positives and ~{expected_replies_at_2wk} total replies"
+    )
+
+
 async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -> None:
     """
     Post the daily send/reply summary to Slack.
 
     Headline reply rate INCLUDES OOO/auto-replies — that's the inbox-placement
     signal (OOO proves we landed). Engagement rate (excl OOO) sits underneath.
-    Booked-calls list is sourced from PlusVibe `label=MEETING_BOOKED`.
+    Adds: 2-weeks benchmark comparison, 10K/day projection, and today's
+    positive-reply detail (calls booked + INTERESTED leads asking for a call).
     """
     try:
         sent = int(stats.get("sent_count") or 0)
-        replied_incl_ooo = int(stats.get("replied_count") or 0)
+        # PlusVibe's `replied_count` counts human labels only
+        # (NOT_INTERESTED + INTERESTED + MEETING_BOOKED). OOO/auto-reply are
+        # separate label buckets and must be added back for the true
+        # inbox-placement signal.
+        replied_excl_ooo = int(stats.get("replied_count") or 0)
         positive = int(stats.get("positive_reply_count") or 0)
         bounced = int(stats.get("bounced_count") or 0)
         camp_name = stats.get("camp_name") or campaign_id
 
-        # OOO + auto-reply counts pulled directly from PlusVibe labels for today
         ooo = await _count_label_today(campaign_id, "OUT_OF_OFFICE", day)
         auto = await _count_label_today(campaign_id, "AUTOMATIC_REPLY", day)
         ooo_total = ooo + auto
-        replied_excl_ooo = max(replied_incl_ooo - ooo_total, 0)
+        replied_incl_ooo = replied_excl_ooo + ooo_total
 
         reply_rate_incl = _pct(replied_incl_ooo, sent)   # deliverability signal — 2% floor
         reply_rate_excl = _pct(replied_excl_ooo, sent)   # engagement signal
-        positive_rate = _pct(positive, replied_incl_ooo)
+        positive_of_reply = _pct(positive, replied_incl_ooo)
+        positive_per_send = round((positive / sent) * 100, 4) if sent else 0.0
         bounce_rate = _pct(bounced, sent)
 
+        # Booked calls today
         booked = await _booked_leads_today(campaign_id, day)
         if booked:
             booked_block = "\n".join(
@@ -331,12 +472,46 @@ async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -
         else:
             booked_section = "*Calls booked today*\n  • none"
 
+        # Positive replies still awaiting booking (asking for call / info / case studies)
+        interested = await _interested_leads_today(campaign_id, day)
+        if interested:
+            interested_block = "\n".join(
+                f"  • {b.get('name') or b.get('email')} ({b.get('email', '')})"
+                + (f" — {b['company']}" if b.get("company") else "")
+                + (f"\n      _{b['body_snippet']}_" if b.get("body_snippet") else "")
+                for b in interested
+            )
+            interested_section = (
+                f"*Positive replies today — awaiting response* ({len(interested)})\n"
+                f"{interested_block}"
+            )
+        else:
+            interested_section = "*Positive replies today — awaiting response*\n  • none"
+
+        # Alerts (surface at top of report)
+        alerts = []
+        if reply_rate_incl < DELIVERABILITY_FLOOR_PCT and sent > 200:
+            alerts.append(
+                f"🔴 Reply rate {reply_rate_incl}% is BELOW {DELIVERABILITY_FLOOR_PCT}% floor — deliverability check"
+            )
+        if bounce_rate >= 2.0 and sent > 200:
+            alerts.append(f"🔴 Bounce rate {bounce_rate}% at/above 2% ceiling — list quality issue")
+        elif bounce_rate >= 1.5:
+            alerts.append(f"🟡 Bounce rate {bounce_rate}% approaching 2% ceiling")
+        if replied_incl_ooo >= 10 and positive_of_reply < TARGET_POS_OF_REPLY_PCT:
+            alerts.append(
+                f"🟡 Positive-of-reply {positive_of_reply}% BELOW {TARGET_POS_OF_REPLY_PCT:.0f}% target"
+                f" (2-weeks winner averaged {BENCH_2WK_POS_OF_REPLY_PCT}%)"
+            )
+        alerts_section = ("\n".join(alerts) + "\n\n") if alerts else ""
+
         week = current_week_index(campaign_id, day)
         date_label = day.strftime("%A, %b %d %Y")
 
         text = (
             f"*Daily Send Report — {camp_name}*\n"
             f"_{date_label}_\n\n"
+            f"{alerts_section}"
             f"*Volume*\n"
             f"  • Emails sent: *{sent}*\n"
             f"  • Ramp: week {week} → expected {current_daily_limit(campaign_id, day)}/mailbox/day\n\n"
@@ -344,9 +519,13 @@ async def generate_daily_send_report(campaign_id: str, day: date, stats: dict) -
             f"  • Reply rate (incl. OOO): *{reply_rate_incl}%* ({replied_incl_ooo} of {sent}) — {_delivery_flag(reply_rate_incl, sent)}\n"
             f"  • Reply rate (excl. OOO): {reply_rate_excl}% ({replied_excl_ooo} of {sent}) — engagement quality\n"
             f"  • Auto-replies / OOO: {ooo_total} ({auto} auto · {ooo} OOO)\n"
-            f"  • Positive replies: {positive} ({positive_rate}% of all replies)\n"
             f"  • Bounces: {bounced} ({bounce_rate}%)\n\n"
-            f"{booked_section}"
+            f"*Positive performance*\n"
+            f"  • Positive replies: *{positive}* ({positive_of_reply}% of all replies · {positive_per_send:.4f}% of sends)\n\n"
+            f"{_benchmark_block(positive_per_send, positive_of_reply, replied_incl_ooo, sent)}\n\n"
+            f"{_projection_block(positive_per_send, positive_of_reply, reply_rate_incl)}\n\n"
+            f"{booked_section}\n\n"
+            f"{interested_section}"
         )
 
         _get_slack().chat_postMessage(channel=_channel(), text=text)
@@ -362,7 +541,8 @@ async def generate_weekly_send_report(campaign_id: str, week_start: date, week_e
             campaign_id, week_start.isoformat(), week_end.isoformat()
         ) or {}
         sent = int(stats.get("sent_count") or 0)
-        replied_incl_ooo = int(stats.get("replied_count") or 0)
+        # `replied_count` excludes OOO/auto (see generate_daily_send_report)
+        replied_excl_ooo = int(stats.get("replied_count") or 0)
         positive = int(stats.get("positive_reply_count") or 0)
         bounced = int(stats.get("bounced_count") or 0)
         camp_name = stats.get("camp_name") or campaign_id
@@ -375,7 +555,7 @@ async def generate_weekly_send_report(campaign_id: str, week_start: date, week_e
             ooo_total += await _count_label_today(campaign_id, "OUT_OF_OFFICE", d)
             ooo_total += await _count_label_today(campaign_id, "AUTOMATIC_REPLY", d)
             d = d + timedelta(days=1)
-        replied_excl_ooo = max(replied_incl_ooo - ooo_total, 0)
+        replied_incl_ooo = replied_excl_ooo + ooo_total
 
         reply_rate_incl = _pct(replied_incl_ooo, sent)
         reply_rate_excl = _pct(replied_excl_ooo, sent)
