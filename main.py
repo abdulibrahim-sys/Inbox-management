@@ -873,7 +873,18 @@ async def _unibox_poller():
     await asyncio.sleep(30)
     while True:
         try:
-            emails = await list_received_emails(CAMPAIGN_ACTIVE)
+            # Fetch the all-labels page (for general dedup tracking) PLUS one
+            # page each of INTERESTED and MEETING_BOOKED. The all-labels feed
+            # can be dominated by OOOs and hide older positive replies —
+            # querying by label directly guarantees we always see them.
+            emails = []
+            seen_ids: set[str] = set()
+            for _label in (None, "INTERESTED", "MEETING_BOOKED"):
+                for e in await list_received_emails(CAMPAIGN_ACTIVE, label=_label):
+                    eid = str(e.get("id") or "")
+                    if eid and eid not in seen_ids:
+                        seen_ids.add(eid)
+                        emails.append(e)
             if emails:
                 r = _get_redis()
                 processed = 0

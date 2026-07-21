@@ -237,7 +237,7 @@ async def get_workspaces() -> dict:
         return response.json()
 
 
-async def list_received_emails(campaign_id: str) -> list[dict]:
+async def list_received_emails(campaign_id: str, label: Optional[str] = None) -> list[dict]:
     """
     Pull the latest page of received-email entries from PlusVibe's unibox.
 
@@ -247,8 +247,11 @@ async def list_received_emails(campaign_id: str) -> list[dict]:
     body.html, eaccount, label, timestamp_created.
 
     Single page only; the poller dedups via Redis and is called every 2 min
-    so the newest page is enough. For full historical pulls (e.g. counting
-    today's meeting-booked leads), use `list_received_emails_paginated`.
+    so the newest page is enough. Pass `label` to restrict to one bucket
+    (INTERESTED, MEETING_BOOKED, OUT_OF_OFFICE, AUTOMATIC_REPLY,
+    NOT_INTERESTED) — critical for making sure INTERESTED replies aren't
+    hidden by a surge of OOOs on the all-labels feed. For full historical
+    pulls, use `list_received_emails_paginated`.
     """
     headers = {"x-api-key": API_KEY}
     params = {
@@ -256,6 +259,8 @@ async def list_received_emails(campaign_id: str) -> list[dict]:
         "campaign_id": campaign_id,
         "email_type": "received",
     }
+    if label:
+        params["label"] = label
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(
