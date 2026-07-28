@@ -61,11 +61,17 @@ from src.integrations.slack import (
 )
 from src.integrations.trendtrack import resolve_and_score
 
-# ── Active campaign (PlusVibe) ────────────────────────────────────────────────
-# All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply). Add new campaign
-# constants below and update CAMPAIGN_ACTIVE when swapping.
-CAMPAIGN_2_WEEKS_MAY = "69fb3fa29465cdb03f8c811f"  # "2 weeks - May [Outlook]"
-CAMPAIGN_ACTIVE = CAMPAIGN_2_WEEKS_MAY
+# ── Active campaigns (PlusVibe) ──────────────────────────────────────────────
+# All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply). Add / remove
+# campaign IDs here as they're launched or paused in PlusVibe. The unibox
+# poller iterates every entry in ACTIVE_CAMPAIGNS.
+CAMPAIGN_AI_ARK_BIG_BRANDS = "6a4bb4325d0a8ff67b02b811"  # Ai-ark-big brands - Copy
+CAMPAIGN_2_WEEKS_JULY      = "6a60f7d25756c23899f6bbd2"  # 2 weeks - july
+
+ACTIVE_CAMPAIGNS: list[str] = [
+    CAMPAIGN_AI_ARK_BIG_BRANDS,
+    CAMPAIGN_2_WEEKS_JULY,
+]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -539,18 +545,19 @@ async def _unibox_poller():
 
     while True:
         try:
-            emails: list[dict] = []
+            emails: list[tuple[str, dict]] = []
             seen_ids: set[str] = set()
-            for label in ("INTERESTED", "MEETING_BOOKED"):
-                for e in await list_received_emails(CAMPAIGN_ACTIVE, label=label):
-                    eid = str(e.get("id") or "")
-                    if eid and eid not in seen_ids:
-                        seen_ids.add(eid)
-                        emails.append(e)
+            for cid in ACTIVE_CAMPAIGNS:
+                for label in ("INTERESTED", "MEETING_BOOKED"):
+                    for e in await list_received_emails(cid, label=label):
+                        eid = str(e.get("id") or "")
+                        if eid and eid not in seen_ids:
+                            seen_ids.add(eid)
+                            emails.append((cid, e))
 
             processed = 0
             skipped = 0
-            for e in emails:
+            for cid, e in emails:
                 eid = str(e.get("id") or "")
                 if not eid or eid in seen:
                     continue
@@ -563,9 +570,7 @@ async def _unibox_poller():
                 payload = _unibox_to_webhook_payload(e)
                 # Enrich with lead_data (name / company / website).
                 try:
-                    ld = await get_lead_data(
-                        payload["data"]["email"], CAMPAIGN_ACTIVE
-                    ) or {}
+                    ld = await get_lead_data(payload["data"]["email"], cid) or {}
                     payload["data"].update({
                         "first_name": ld.get("first_name") or "",
                         "last_name": ld.get("last_name") or "",

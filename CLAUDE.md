@@ -51,12 +51,13 @@ reply_agent_instructions.md   # Source-of-truth spec for the reply agent
 
 **Ground truth for facts + intent library:** [data/reply_agent_spec.py](data/reply_agent_spec.py). Both classifier and drafter import from here — do not duplicate facts elsewhere.
 
-### Active campaign
-| Campaign | ID | Slack channel |
-|---|---|---|
-| 2 weeks – May [Outlook] | `69fb3fa29465cdb03f8c811f` | `#inbox-agent-reply` (`C0AJG9V9JSE`) |
+### Active campaigns
+Both feed replies into `#inbox-agent-reply` (`C0AJG9V9JSE`). Update the `ACTIVE_CAMPAIGNS` list in `main.py` when campaigns start/pause in PlusVibe.
 
-Update `CAMPAIGN_ACTIVE` in `main.py` when swapping.
+| Campaign | ID |
+|---|---|
+| Ai-ark-big brands - Copy | `6a4bb4325d0a8ff67b02b811` |
+| 2 weeks - july           | `6a60f7d25756c23899f6bbd2` |
 
 ### Flow
 ```
