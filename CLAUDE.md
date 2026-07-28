@@ -1,145 +1,103 @@
 # Agent Instructions
 
-You're working inside the **WAT framework** (Workflows, Agents, Tools). This architecture separates concerns so that probabilistic AI handles reasoning while deterministic code handles execution. That separation is what makes this system reliable.
+You're working inside the **WAT framework** (Workflows, Agents, Tools). Probabilistic AI handles reasoning; deterministic code handles execution.
 
 ## The WAT Architecture
 
-**Layer 1: Workflows (The Instructions)**
-- Markdown SOPs stored in `workflows/`
-- Each workflow defines the objective, required inputs, which tools to use, expected outputs, and how to handle edge cases
-- Written in plain language, the same way you'd brief someone on your team
+**Layer 1: Workflows (The Instructions)** — Markdown SOPs in `workflows/`. Objective, required inputs, tools, expected outputs, edge cases.
 
-**Layer 2: Agents (The Decision-Maker)**
-- This is your role. You're responsible for intelligent coordination.
-- Read the relevant workflow, run tools in the correct sequence, handle failures gracefully, and ask clarifying questions when needed
-- You connect intent to execution without trying to do everything yourself
-- Example: If you need to pull data from a website, don't attempt it directly. Read `workflows/scrape_website.md`, figure out the required inputs, then execute `tools/scrape_single_site.py`
+**Layer 2: Agents (The Decision-Maker)** — This is your role. Read the relevant workflow, run tools in order, handle failures, ask when unclear.
 
-**Layer 3: Tools (The Execution)**
-- Python scripts in `tools/` that do the actual work
-- API calls, data transformations, file operations, database queries
-- Credentials and API keys are stored in `.env`
-- These scripts are consistent, testable, and fast
+**Layer 3: Tools (The Execution)** — Python scripts in `tools/` and `src/`. API calls, transformations, file ops, DB queries. Credentials in `.env`.
 
-**Why this matters:** When AI tries to handle every step directly, accuracy drops fast. If each step is 90% accurate, you're down to 59% success after just five steps. By offloading execution to deterministic scripts, you stay focused on orchestration and decision-making where you excel.
+**Why it matters:** if every step is 90% accurate, five steps compound to 59%. Offloading execution to deterministic scripts keeps orchestration reliable.
 
 ## How to Operate
 
-**1. Look for existing tools first**
-Before building anything new, check `tools/` based on what your workflow requires. Only create new scripts when nothing exists for that task.
+**1. Look for existing tools first.** Check `tools/` and `src/integrations/` before writing new scripts.
 
-**2. Learn and adapt when things fail**
-When you hit an error:
-- Read the full error message and trace
-- Fix the script and retest (if it uses paid API calls or credits, check with me before running again)
-- Document what you learned in the workflow (rate limits, timing quirks, unexpected behavior)
-- Example: You get rate-limited on an API, so you dig into the docs, discover a batch endpoint, refactor the tool to use it, verify it works, then update the workflow so this never happens again
+**2. Learn and adapt when things fail.** Read the full trace. Fix the script. If it uses paid APIs, ask before retrying. Document lessons in the workflow.
 
-**3. Keep workflows current**
-Workflows should evolve as you learn. When you find better methods, discover constraints, or encounter recurring issues, update the workflow. That said, don't create or overwrite workflows without asking unless I explicitly tell you to. These are your instructions and need to be preserved and refined, not tossed after one use.
-
-## The Self-Improvement Loop
-
-Every failure is a chance to make the system stronger:
-1. Identify what broke
-2. Fix the tool
-3. Verify the fix works
-4. Update the workflow with the new approach
-5. Move on with a more robust system
-
-This loop is how the framework improves over time.
+**3. Keep workflows current.** Evolve them as you learn. Don't overwrite without asking unless told to.
 
 ## File Structure
 
-**What goes where:**
-- **Deliverables**: Final outputs go to cloud services (Google Sheets, Slides, etc.) where I can access them directly
-- **Intermediates**: Temporary processing files that can be regenerated
-
-**Directory layout:**
 ```
-.tmp/           # Temporary files (scraped data, intermediate exports). Regenerated as needed.
-tools/          # Python scripts for deterministic execution
-workflows/      # Markdown SOPs defining what to do and how
-.env            # API keys and environment variables (NEVER store secrets anywhere else)
-credentials.json, token.json  # Google OAuth (gitignored)
+.tmp/               # Temporary files (regenerable)
+data/               # Static reference data (canonical facts, spec modules)
+src/                # Application code
+  classifier.py     # 32-intent reply classifier
+  drafter.py        # Reply drafter (canonical facts + voice)
+  integrations/
+    plusvibe.py     # Unibox + send + lead data
+    slack.py        # Review card + disregard + escalation posts
+    trendtrack.py   # Brand resolution: monthly visits, ads, country
+    beehiiv.py      # Auto-subscribe positive-reply leads
+    calendly.py     # (dormant — webhook verifier, not wired)
+tools/              # Standalone deterministic scripts
+workflows/          # Markdown SOPs
+main.py             # FastAPI entrypoint (Railway)
+reply_agent_instructions.md   # Source-of-truth spec for the reply agent
+.env                # Secrets (never commit)
 ```
-
-**Core principle:** Local files are just for processing. Anything I need to see or use lives in cloud services. Everything in `.tmp/` is disposable.
-
-## Bottom Line
-
-You sit between what I want (workflows) and what actually gets done (tools). Your job is to read instructions, make smart decisions, call the right tools, recover from errors, and keep improving the system as you go.
-
-Stay pragmatic. Stay reliable. Keep learning.
 
 ---
 
-## Live System — Inbox Management Agent
+## Live System — Inbox Reply Agent
 
-**Stack:** FastAPI + uvicorn on Railway, Claude claude-sonnet-4-6, Upstash Redis, Slack Block Kit, Google Sheets API v4
+**Stack:** FastAPI + uvicorn on Railway · Claude claude-sonnet-4-6 · Slack Block Kit · Trendtrack public API · Beehiiv
 
-### Campaigns
-| Campaign | ID | Slack Channel | Classifier | Drafter |
-|---|---|---|---|---|
-| 2 weeks - May [Outlook] | `69fb3fa29465cdb03f8c811f` | `#inbox-agent-reply` (`C0AJG9V9JSE`) | `src/classifier.py` | `src/drafter.py` |
+**Ground truth for behaviour:** [reply_agent_instructions.md](reply_agent_instructions.md). Any drift between code and that file — the file wins, and code is wrong.
 
-Older campaigns (2 Weeks Trendfeed `69971f0aefa0db65892f6b37`, Ad Creative Offer `69e5f93e9aaf180271922b71`) are inactive. Add new campaigns as constants in `main.py` when they go live.
+**Ground truth for facts + intent library:** [data/reply_agent_spec.py](data/reply_agent_spec.py). Both classifier and drafter import from here — do not duplicate facts elsewhere.
 
-### Reply Agent Rules
-- Handle `LEAD_MARKED_AS_INTERESTED` for the active campaign(s) listed above
-- All approved replies post to `SLACK_CHANNEL_ID` (`#inbox-agent-reply`)
-- First reply: no case studies; follow-ups may include them
-- Responses: 60–100 words, handle objection first, pivot to call with "You can grab a time here 👉 [link]"
-- Own Trendfeed's cold emails — never disclaim or distance from them
-- Client count: 150+ across a dozen industries
+### Active campaign
+| Campaign | ID | Slack channel |
+|---|---|---|
+| 2 weeks – May [Outlook] | `69fb3fa29465cdb03f8c811f` | `#inbox-agent-reply` (`C0AJG9V9JSE`) |
 
-### CRM — Google Sheets
-Tabs: `Pipeline`, `Call Log`, `Follow-Up Schedule`, `Monthly Metrics`
-Protected (read-only): `Dashboard`, `Loss Analysis`
+Update `CAMPAIGN_ACTIVE` in `main.py` when swapping.
 
-Data start rows: Pipeline=3, Call Log=3, Follow-Up Schedule=4, Monthly Metrics=4
+### Flow
+```
+PlusVibe unibox / webhook  →  _process_reply
+  1. Beehiiv subscribe (positive-reply signal)
+  2. Trendtrack resolve → intel block (visits, ads, country)
+  3. Classify intent (1..32) with thread context
+  4. Resolve conditional intent 24; apply geography gate
+  5. Route by disposition:
+       draft     → drafter → Slack review card
+       disregard → Slack disregard notification (no send)
+       escalate  → Slack "needs a human"
+       park      → silent (OOO / wait-for-date)
+       stop      → silent, no reply
+       suppress  → Slack unsubscribe alert
+```
 
-**Auto-writes:**
-- `POST /webhook/plusvibe` (LEAD_MARKED_AS_INTERESTED) → appends/updates Pipeline row
-- `POST /webhook/plusvibe` (Meeting booked tag) → appends Call Log row + updates Pipeline stage to "Call Booked" + Slack notification
-- Approved reply → updates Pipeline `last_touch`, `stage`, `next_followup`
+Follow-ups, Google Sheets CRM, weekly/monthly reports, and @mention CRM commands have been removed from this build; they'll be rebuilt against the new spec later.
 
-**Slack CRM bot (@mention → `/webhook/slack/events`):**
-- `@bot [name] showed / no-showed` — updates Call Log show status; no-show triggers auto-nurture schedule
-- `@bot close [name] at $X` — marks Closed Won, logs revenue, updates Monthly Metrics
-- `@bot lose [name] reason [text]` — marks Closed Lost, logs reason
-- `@bot proposal sent to [name]` — advances stage
-- `@bot nurture [name]` — moves to long-term nurture cadence
-- `@bot note [name]: [text]` — appends note
-- `@bot reschedule [name] to [date]` — updates Call Log
-- `@bot book follow-up [name] for [date]` — sets next_followup in Pipeline
-- `@bot stats [this week|this month]` — returns pipeline snapshot
+### Env vars (Railway)
+Required: `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, `SLACK_SIGNING_SECRET`, `PLUSVIBE_API_KEY`, `PLUSVIBE_WORKSPACE_ID`, `ANTHROPIC_API_KEY`, `BEEHIIV_API_KEY`, `BEEHIIV_PUBLICATION_ID`, `TRENDTRACK_API_KEY`.
 
-**Nurture cadences (Follow-Up Schedule days):**
-- No Show: 1, 3, 7, 14, 30, 60, 90
-- Closed Lost – timing: 30, 60, 90, 180
-- Closed Lost – budget: 60, 90, 180
-- Closed Lost – decided: 90, 180
-- Ghosted: 7, 14, 30, 60
+Optional / kept for the next CRM build: `GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `CALENDLY_WEBHOOK_SECRET`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`.
 
-**Scheduled reports:**
-- Weekly: Friday 7pm EST → Slack
-- Monthly: last day of month 7pm EST → Slack
+### Webhooks to register
+- PlusVibe: `POST /webhook/plusvibe`
+- Slack actions: `POST /webhook/slack/actions`
+- Slack events: `POST /webhook/slack/events` (URL verification only in this build)
 
-### Beehiiv Newsletter
-- All `LEAD_MARKED_AS_INTERESTED` events auto-subscribe to Beehiiv
-- Failed subscriptions queued in Redis (`beehiiv:retry_queue`) and retried every 24h
-- Pub ID must have `pub_` prefix (auto-prefixed if missing)
+### Admin endpoints (diagnostic)
+- `GET  /health`
+- `GET  /admin/workspaces`
+- `POST /admin/register-webhook`      — body: `{"url": "https://..."}`
+- `POST /admin/retry-beehiiv`
+- `POST /admin/test-slack`
+- `GET  /admin/trendtrack-lookup?q=<domain or brand>`   — resolve one brand end-to-end
+- `POST /admin/reprocess-last-webhook` — body: raw PlusVibe webhook JSON to replay
 
-### Env Vars Required (Railway)
-`SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, `SLACK_CHANNEL_AI_VISIBILITY`, `SLACK_SIGNING_SECRET`,
-`PLUSVIBE_API_KEY`, `PLUSVIBE_WORKSPACE_ID`, `ANTHROPIC_API_KEY`,
-`UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`,
-`BEEHIIV_API_KEY`, `BEEHIIV_PUBLICATION_ID`,
-`GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON or base64), `GOOGLE_SHEETS_ID`,
-`CALENDLY_WEBHOOK_SECRET`
-
-### Webhooks to Register
-- PlusVibe: `POST /webhook/plusvibe` (handles both LEAD_MARKED_AS_INTERESTED and Meeting booked tag)
-- Slack Actions: `POST /webhook/slack/actions`
-- Slack Events: `POST /webhook/slack/events` (subscribe to `app_mention`)
+### Voice + facts rules (never break)
+- No dashes of any kind in drafts (hyphen, en, em — all rewritten).
+- Only figures/claims in `CANONICAL_FACTS` are ever stated. "150+ brands" and "$100M+" are BOTH wrong.
+- Never quote the intel block back to the prospect.
+- Never claim to be human if asked directly (intent 21 escalates).
+- Own Trendfeed's cold emails — never disclaim or distance from them.

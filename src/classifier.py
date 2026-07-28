@@ -1,12 +1,36 @@
+"""
+Reply classifier — maps an inbound prospect reply to exactly one of the 32
+intents in data/reply_agent_spec.INTENT_LIBRARY.
+
+Returns:
+  {
+    "intent_n": int,        # 1..32, or 0 if we can't decide (→ escalate)
+    "intent_name": str,
+    "disposition": str,     # draft | escalate | disregard | park | stop | suppress | conditional
+    "confidence": "high|medium|low",
+    "reasoning": str,
+    "escalation_reason": str,  # populated when the classifier decides to escalate
+  }
+
+Intent 24 has disposition="conditional" — the caller must resolve to
+'draft' | 'disregard' | 'escalate' using the intel block per section 9.
+"""
 import json
+import logging
 import os
-from pathlib import Path
 
 import anthropic
 
+from data.reply_agent_spec import (
+    ESCALATION_TRIGGERS,
+    get_intent,
+    intent_list_for_classifier,
+)
+
+log = logging.getLogger(__name__)
 
 _client: anthropic.AsyncAnthropic | None = None
-_templates: dict | None = None
+MODEL = "claude-sonnet-4-6"
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -16,51 +40,59 @@ def _get_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
-def _load_templates() -> dict:
-    global _templates
-    if _templates is None:
-        path = Path(__file__).parent.parent / "data" / "templates.json"
-        _templates = json.loads(path.read_text())
-    return _templates
+CLASSIFIER_SYSTEM = f"""You classify inbound cold-email replies for Trendfeed. Read the prospect's reply (plus optional thread history) and choose EXACTLY ONE intent from the library.
+
+Intent library:
+{intent_list_for_classifier()}
+
+Rules:
+- Pick the single best-fit intent. If the reply mixes 3 or more genuinely distinct intents, output intent_n=0 with escalation_reason="mixed intents".
+- If you can't confidently place the reply into one of these 32 intents, output intent_n=0 with escalation_reason describing why.
+- Some intents look similar — distinguish them carefully:
+    * 4 (wants email, not a call) vs 16 (send me a proposal / strategy first). "Just answer me here" is 4. "Send me a plan / audit / teardown / strategy doc" is 16.
+    * 5 (how does the guarantee work) vs 6 (what does 'you don't pay' mean) vs 11 (sounds too good to be true). 5 is a first-time factual question. 6 is a follow-up challenge specifically on the wording. 11 is broad skepticism.
+    * 10 (case studies / proof / references) vs 11 (sounds too good to be true). 10 is "show me evidence". 11 is doubt about the offer itself.
+    * 17 (already have an agency / already have flows) vs 27 (not interested with no question). 17 leaves room for a conversation. 27 is a hard no.
+    * 24 (what ads did you see) is very specific — they are challenging the outreach hook that mentioned their ads.
+    * 30 (only reply is 'we don't run ads') is different from 24 — 30 is a flat statement, no question about which ad.
+    * 32 (unsubscribe / hostile / legal) is the only suppressing intent. "Not interested" alone is 27, not 32.
+
+Also apply these hard escalation triggers on top of intent choice — if any of these are true, output intent_n=0 and describe which trigger fired in escalation_reason:
+{ESCALATION_TRIGGERS}
+
+Output STRICT JSON only, no prose, no code fences:
+{{"intent_n": <int>, "confidence": "high|medium|low", "reasoning": "<one sentence>", "escalation_reason": "<string, empty if intent_n != 0>"}}"""
 
 
-async def classify_reply(body: str, subject: str = "") -> dict:
+async def classify_reply(body: str, subject: str = "", thread_context: str = "") -> dict:
     """
-    Classify a prospect reply into a reply type.
-    Returns {"reply_type": str, "confidence": str, "reasoning": str}
+    Classify a prospect reply. `thread_context` is optional — a compact
+    summary of prior exchanges on the same thread, used to distinguish
+    move-1 vs move-2 style intents.
     """
-    templates = _load_templates()
-    reply_types_list = "\n".join(
-        f"- {rt}: {data['description']}"
-        for rt, data in templates["reply_types"].items()
+    user_prompt = (
+        f"Subject: {subject or '(none)'}\n\n"
+        f"Reply body:\n\"\"\"\n{body[:3000]}\n\"\"\""
     )
+    if thread_context:
+        user_prompt += (
+            f"\n\nPrior thread (older messages first):\n\"\"\"\n"
+            f"{thread_context[:2000]}\n\"\"\""
+        )
 
-    prompt = f"""You are classifying a cold email reply for Trendfeed, a retention email marketing agency.
+    try:
+        response = await _get_client().messages.create(
+            model=MODEL,
+            max_tokens=250,
+            system=CLASSIFIER_SYSTEM,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        raw = response.content[0].text.strip()
+    except Exception as e:
+        log.exception(f"Classifier LLM call failed: {e}")
+        return _escalation_result("classifier error")
 
-Classify the reply into exactly ONE of these reply types:
-{reply_types_list}
-
-Subject: {subject}
-Reply body:
-\"\"\"
-{body[:2000]}
-\"\"\"
-
-Respond with JSON only, no explanation:
-{{
-  "reply_type": "<type>",
-  "confidence": "high|medium|low",
-  "reasoning": "<one sentence>"
-}}"""
-
-    response = await _get_client().messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    raw = response.content[0].text.strip()
-    # Strip markdown code fences if present
+    # Strip markdown code fences if the model added them.
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -70,16 +102,86 @@ Respond with JSON only, no explanation:
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:
-        result = {"reply_type": "uncategorised", "confidence": "low", "reasoning": "Parse error"}
+        log.warning(f"Classifier returned non-JSON: {raw[:200]}")
+        return _escalation_result("classifier parse error")
 
-    # Ensure the reply_type is a known type
-    if result.get("reply_type") not in templates["reply_types"]:
-        result["reply_type"] = "uncategorised"
+    intent_n = int(result.get("intent_n") or 0)
+    intent = get_intent(intent_n)
+    return {
+        "intent_n": intent["n"],
+        "intent_name": intent["name"],
+        "disposition": intent["disposition"],
+        "confidence": result.get("confidence") or "low",
+        "reasoning": result.get("reasoning") or "",
+        "escalation_reason": result.get("escalation_reason") or "",
+    }
 
-    return result
+
+def _escalation_result(reason: str) -> dict:
+    intent = get_intent(0)
+    return {
+        "intent_n": 0,
+        "intent_name": intent["name"],
+        "disposition": intent["disposition"],
+        "confidence": "low",
+        "reasoning": reason,
+        "escalation_reason": reason,
+    }
 
 
-def get_reply_type_meta(reply_type: str) -> dict:
-    """Return the metadata for a given reply type (flags, no_draft, requires_scrape, etc.)"""
-    templates = _load_templates()
-    return templates["reply_types"].get(reply_type, templates["reply_types"]["uncategorised"])
+def resolve_intent_24(
+    classification: dict,
+    active_ads: int,
+    monthly_visits: int,
+) -> dict:
+    """
+    Apply the section-9 conditional logic for intent 24 (what ads did you see).
+
+    Mutates and returns a copy of the classification dict with a concrete
+    disposition (draft | disregard | escalate) — never 'conditional'.
+
+    Rule (per spec):
+      active_ads == 0 AND monthly_visits < 5000  → disregard
+      active_ads == 0 AND monthly_visits >= 5000 → escalate
+      active_ads > 0                              → draft
+    """
+    if classification.get("intent_n") != 24:
+        return classification
+
+    out = dict(classification)
+    if active_ads > 0:
+        out["disposition"] = "draft"
+    elif monthly_visits < 5000:
+        out["disposition"] = "disregard"
+        out["disregard_reason"] = (
+            "Under 5k monthly visits and no Meta ads indexed — the outreach "
+            "hook doesn't hold and the brand is below our qualifying floor."
+        )
+    else:
+        out["disposition"] = "escalate"
+        out["escalation_reason"] = (
+            "Prospect asked which ads we saw, but no Meta ads are indexed on "
+            "Trendtrack. Answering would either invent an ad or concede the "
+            "outreach premise was wrong."
+        )
+    return out
+
+
+def promote_geo_stop(classification: dict, geography_verdict: str) -> dict:
+    """
+    Apply the section-3 geography gate on top of the intent classification.
+    A 'not_allowed' verdict overrides any intent → intent 31 (stop, no reply).
+    """
+    if geography_verdict == "not_allowed":
+        stop_intent = get_intent(31)
+        return {
+            **classification,
+            "intent_n": stop_intent["n"],
+            "intent_name": stop_intent["name"],
+            "disposition": stop_intent["disposition"],
+            "reasoning": (
+                (classification.get("reasoning") or "")
+                + " | Geography gate: dominant traffic country is excluded."
+            ).strip(" |"),
+        }
+    return classification

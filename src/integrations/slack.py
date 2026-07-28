@@ -28,39 +28,82 @@ def verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
     return hmac.compare_digest(computed, signature)
 
 
+def _qualification_label(intel: dict | None) -> str:
+    """Section 7 qualification: under 3k visits AND no ads → unqualified,
+    one signal present → watch, both present → qualified."""
+    if not intel:
+        return "❓ unknown"
+    visits = intel.get("monthly_visits") or 0
+    ads = intel.get("active_ads") or 0
+    has_visits = visits >= 3000
+    has_ads = ads > 0
+    if has_visits and has_ads:
+        return "✅ qualified"
+    if has_visits or has_ads:
+        return "👀 watch"
+    return "🚫 unqualified"
+
+
+def _intel_block_mrkdwn(intel: dict | None, prospect_email: str) -> str:
+    """Render the section-7 intel block as a single mrkdwn string."""
+    if not intel:
+        return (
+            f"*✉️* `{prospect_email}`\n"
+            f"*🏬* _resolution unavailable — no Trendtrack lookup ran_"
+        )
+    geo = intel.get("geography") or {}
+    ads = intel.get("active_ads") or 0
+    ads_line = f"{ads} active" if ads > 0 else "none indexed"
+    visits = intel.get("monthly_visits") or 0
+    return (
+        f"*✉️* `{prospect_email}`\n"
+        f"*🏬* {intel.get('domain') or 'unknown'}  "
+        f"({intel.get('confidence_label') or 'unconfirmed'})\n"
+        f"*📊* {visits:,} monthly visits  _(Trendtrack)_\n"
+        f"*📣* Meta ads: {ads_line}\n"
+        f"*🌍* {geo.get('label') or 'unknown'}  "
+        f"(verdict: {geo.get('verdict') or 'unknown'})\n"
+        f"*✅* Qualification: {_qualification_label(intel)}"
+    )
+
+
 def post_review_message(
     email_id: str,
     first_name: str,
     last_name: str,
     company_name: str,
-    website: str,
-    category: str,
-    reply_type: str,
+    prospect_email: str,
+    intent_n: int,
+    intent_name: str,
     original_message: str,
     draft_response: str,
-    flag: bool = False,
-    flag_reason: str = "",
+    intel: dict | None = None,
     channel_override: str = "",
 ) -> str:
     """
-    Post a Block Kit review message to #inbox-review.
-    Returns the message timestamp (ts) for later updates.
+    Section 7 "draft for approval" Slack message.
+    Returns the message timestamp for later updates.
     """
-    flag_note = f"\n\n:warning: *FLAG:* {flag_reason}" if flag else ""
+    name_line = f"{first_name} {last_name}".strip() or "(unknown)"
+    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
 
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "📩 NEW REPLY — Requires Review"},
+            "text": {"type": "plain_text",
+                     "text": f"💬 New reply to approve — {brand_title[:100]}"},
         },
         {
             "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*👤 Prospect:*\n{first_name} {last_name}"},
-                {"type": "mrkdwn", "text": f"*🏢 Company:*\n{company_name}"},
-                {"type": "mrkdwn", "text": f"*🌐 Website:*\n{website or 'N/A'}"},
-                {"type": "mrkdwn", "text": f"*🏷️ Category:*\n{category}"},
-                {"type": "mrkdwn", "text": f"*📂 Reply Type:*\n{reply_type}"},
+            "text": {"type": "mrkdwn",
+                     "text": _intel_block_mrkdwn(intel, prospect_email)},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn",
+                 "text": f"*👤 Prospect:* {name_line}   "
+                         f"*🧠 Intent:* {intent_n}. {intent_name}"},
             ],
         },
         {"type": "divider"},
@@ -68,7 +111,7 @@ def post_review_message(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*── Original Message ──*\n{original_message[:2000]}",
+                "text": f"*Original message*\n{original_message[:2000]}",
             },
         },
         {"type": "divider"},
@@ -76,7 +119,7 @@ def post_review_message(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*── Drafted Response ──*\n{draft_response}{flag_note}",
+                "text": f"*Drafted reply*\n{draft_response}",
             },
         },
         {
@@ -105,7 +148,116 @@ def post_review_message(
     response = client.chat_postMessage(
         channel=target_channel,
         blocks=blocks,
-        text=f"New reply from {first_name} {last_name} at {company_name} — requires review",
+        text=f"New reply from {name_line} at {brand_title} — requires review",
+    )
+    return response["ts"]
+
+
+def post_disregard_notification(
+    first_name: str,
+    last_name: str,
+    company_name: str,
+    prospect_email: str,
+    intent_n: int,
+    intent_name: str,
+    original_message: str,
+    intel: dict | None,
+    reason: str,
+    channel_override: str = "",
+) -> str:
+    """Section 7 disregard notification — no reply drafted, tells the approver why."""
+    name_line = f"{first_name} {last_name}".strip() or "(unknown)"
+    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text",
+                     "text": f"🚫 Disregarded, no reply drafted — {brand_title[:100]}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn",
+                     "text": _intel_block_mrkdwn(intel, prospect_email)},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn",
+                 "text": f"*👤 Prospect:* {name_line}   "
+                         f"*🧠 Intent:* {intent_n}. {intent_name}"},
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn",
+                     "text": f"*They said*\n{original_message[:1500]}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"⚠️  *Why:* {reason}"},
+        },
+    ]
+    target_channel = channel_override or SLACK_CHANNEL_ID
+    response = client.chat_postMessage(
+        channel=target_channel,
+        blocks=blocks,
+        text=f"Disregarded — {name_line} ({brand_title})",
+    )
+    return response["ts"]
+
+
+def post_escalation_message(
+    first_name: str,
+    last_name: str,
+    company_name: str,
+    prospect_email: str,
+    intent_n: int,
+    intent_name: str,
+    original_message: str,
+    intel: dict | None,
+    reason: str,
+    channel_override: str = "",
+) -> str:
+    """Section 7 escalation — needs a human."""
+    name_line = f"{first_name} {last_name}".strip() or "(unknown)"
+    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text",
+                     "text": f"🚨 Needs a human — {brand_title[:100]}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn",
+                     "text": _intel_block_mrkdwn(intel, prospect_email)},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn",
+                 "text": f"*👤 Prospect:* {name_line}   "
+                         f"*🧠 Intent:* {intent_n}. {intent_name}"},
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn",
+                     "text": f"*They said*\n{original_message[:1500]}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn",
+                     "text": f"⚠️  *Why I stopped:* {reason}"},
+        },
+    ]
+    target_channel = channel_override or SLACK_CHANNEL_ID
+    response = client.chat_postMessage(
+        channel=target_channel,
+        blocks=blocks,
+        text=f"Needs a human — {name_line} ({brand_title})",
     )
     return response["ts"]
 
