@@ -37,7 +37,12 @@ load_dotenv()
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from src.classifier import classify_reply, promote_geo_stop, resolve_intent_24
+from src.classifier import (
+    check_tld_geography,
+    classify_reply,
+    promote_geo_stop,
+    resolve_intent_24,
+)
 from src.drafter import draft_reply
 from src.integrations.beehiiv import process_retry_queue, subscribe_to_newsletter
 from src.integrations.plusvibe import (
@@ -73,8 +78,6 @@ from src.followup_engine import (
     scan_backlog,
     store_pending_followup,
 )
-from src.integrations.trendtrack import resolve_and_score
-
 # ── Active campaigns (PlusVibe) ──────────────────────────────────────────────
 # All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply). Add / remove
 # campaign IDs here as they're launched or paused in PlusVibe. The unibox
@@ -198,20 +201,7 @@ async def _process_reply(payload: dict) -> None:
             log.error("No identifier for this reply, skipping")
             return
 
-        # 3. Trendtrack brand resolution → intel block
-        email_domain = reply.from_email.split("@")[-1] if reply.from_email else ""
-        intel = await resolve_and_score(
-            email_domain=email_domain,
-            brand_name_fallback=reply.company_name or "",
-        )
-        log.info(
-            f"Trendtrack: {intel.get('confidence_label')}, "
-            f"{intel.get('monthly_visits')} visits, "
-            f"{intel.get('active_ads')} ads, "
-            f"geo={intel.get('geography', {}).get('verdict')}"
-        )
-
-        # 4. Fetch thread for classifier context + move-1/2 counting
+        # 3. Fetch thread for classifier context + move-1/2 counting
         thread = []
         try:
             thread = await get_email_thread(reply.from_email) if reply.from_email else []
@@ -219,7 +209,7 @@ async def _process_reply(payload: dict) -> None:
             log.exception("Thread fetch failed (non-fatal)")
         thread_context = _format_thread_for_classifier(thread)
 
-        # 5. Classify
+        # 4. Classify
         classification = await classify_reply(
             body=reply.body,
             subject=reply.subject,
@@ -230,23 +220,18 @@ async def _process_reply(payload: dict) -> None:
             f"({classification['confidence']}, disp={classification['disposition']})"
         )
 
-        # 6. Resolve conditional intent 24 + geography gate
-        classification = resolve_intent_24(
-            classification,
-            active_ads=intel.get("active_ads", 0),
-            monthly_visits=intel.get("monthly_visits", 0),
-        )
+        # 5. Intent 24 always escalates now (no ad data); TLD-based geo gate.
+        classification = resolve_intent_24(classification)
         classification = promote_geo_stop(
             classification,
-            geography_verdict=(intel.get("geography") or {}).get("verdict") or "unknown",
+            geography_verdict=check_tld_geography(reply.from_email or ""),
         )
 
-        # 7. Route by disposition
+        # 6. Route by disposition
         await _route_by_disposition(
             classification=classification,
             reply=reply,
             record_id=record_id,
-            intel=intel,
             thread=thread,
         )
 
@@ -258,7 +243,6 @@ async def _route_by_disposition(
     classification: dict,
     reply,
     record_id: str,
-    intel: dict,
     thread: list[dict],
 ) -> None:
     disposition = classification.get("disposition")
@@ -273,7 +257,6 @@ async def _route_by_disposition(
         intent_n=intent_n,
         intent_name=intent_name,
         original_message=reply.body,
-        intel=intel,
     )
 
     if disposition == "draft":
@@ -282,9 +265,8 @@ async def _route_by_disposition(
             prospect_body=reply.body,
             first_name=reply.first_name or "there",
             company_name=reply.company_name or "",
-            intel=intel,
+            prospect_email=reply.from_email or "",
             thread=thread,
-            our_sending_domain=(reply.to_email.split("@")[-1] if reply.to_email else ""),
         )
         log.info(f"Draft created ({len(draft)} chars) for intent {intent_n}")
 
@@ -304,8 +286,9 @@ async def _route_by_disposition(
         log.info(f"Posted draft to Slack ts={slack_ts}")
 
     elif disposition == "disregard":
-        reason = classification.get("disregard_reason") or (
-            "Prospect below qualifying floor per section 24 (no ads, <5k visits)."
+        reason = (
+            classification.get("disregard_reason")
+            or f"Intent {intent_n} routed to disregard per spec."
         )
         ts = post_disregard_notification(reason=reason, **common_kwargs)
         log.info(f"Disregarded {record_id} — {reason} (ts={ts})")
@@ -809,16 +792,6 @@ async def admin_test_slack():
         return {"ok": True, "ts": r["ts"], "channel": SLACK_CHANNEL_ID}
     except Exception as e:
         return {"ok": False, "error": str(e), "channel": SLACK_CHANNEL_ID}
-
-
-@app.get("/admin/trendtrack-lookup")
-async def admin_trendtrack_lookup(request: Request):
-    """Diagnostic: resolve a domain or brand name through Trendtrack."""
-    q = request.query_params.get("q", "")
-    if not q:
-        return JSONResponse({"error": "?q=<domain-or-name> required"}, status_code=400)
-    result = await resolve_and_score(email_domain=q, brand_name_fallback=q)
-    return result
 
 
 @app.post("/admin/reprocess-last-webhook")

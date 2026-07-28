@@ -38,10 +38,6 @@ from src.integrations.plusvibe import (
     list_received_emails_paginated,
 )
 from src.integrations.slack import post_followup_review
-from src.integrations.trendtrack import (
-    get_top_static_ads_for_brand,
-    resolve_and_score,
-)
 
 log = logging.getLogger(__name__)
 
@@ -232,49 +228,28 @@ async def scan_backlog(min_days_since_our_reply: int = 8) -> list[BacklogCandida
 class DraftedFollowup:
     candidate: BacklogCandidate
     draft: str
-    ad_used: Optional[dict]
-    intel: dict
+    thread: list[dict] = field(default_factory=list)
+
+
+# TLD-based geography check reused from the reply agent path.
+from src.classifier import check_tld_geography  # noqa: E402
 
 
 async def draft_for_candidate(c: BacklogCandidate) -> Optional[DraftedFollowup]:
     """
-    Build the full context for one candidate and produce the follow-up draft.
+    Build context for one candidate and produce the follow-up draft.
 
-    Returns None if Trendtrack can't resolve the brand AND we have nothing
-    else to say — the caller can decide to escalate manually instead of
-    firing a generic follow-up.
+    Personalisation is thread-only (no brand research). Skips leads where
+    the email TLD is in the excluded set (.in / .pk) — those shouldn't have
+    been outreached in the first place, and a reactivation isn't the moment
+    to compound that.
     """
-    # Intel
-    domain = c.prospect_email.split("@")[-1] if "@" in c.prospect_email else ""
-    intel = await resolve_and_score(
-        email_domain=domain, brand_name_fallback=c.company_name or ""
-    )
-
-    # If Trendtrack says geography=not_allowed, don't follow up at all.
-    geo = (intel.get("geography") or {}).get("verdict") or "unknown"
-    if geo == "not_allowed":
+    if check_tld_geography(c.prospect_email) == "not_allowed":
         log.info(
-            f"follow-up skipped for {c.prospect_email}: geo verdict not_allowed"
+            f"follow-up skipped for {c.prospect_email}: TLD in excluded set"
         )
         return None
 
-    # Top static ad (may be empty for brands with no active ads or video-only).
-    ad_context: Optional[dict] = None
-    if intel.get("advertiser_id"):
-        ads = await get_top_static_ads_for_brand(intel["advertiser_id"], limit=1)
-        if ads:
-            ad_context = ads[0]
-
-    # Landing fallback — build from intel we already have. A dedicated landing
-    # scrape can come later if this proves too generic.
-    landing_context = None
-    if not ad_context and intel.get("resolved"):
-        landing_context = {
-            "name": intel.get("name") or c.company_name,
-            "domain": intel.get("domain") or domain,
-        }
-
-    # Thread — newest first, cap at 8 for the drafter.
     try:
         thread = await get_email_thread(c.prospect_email)
     except Exception:
@@ -283,17 +258,13 @@ async def draft_for_candidate(c: BacklogCandidate) -> Optional[DraftedFollowup]:
 
     draft = await draft_followup(
         thread=thread,
-        intel=intel,
         first_name=c.first_name or "",
-        company_name=c.company_name or intel.get("name") or "",
-        ad_context=ad_context,
-        landing_context=landing_context,
+        company_name=c.company_name or "",
+        prospect_email=c.prospect_email,
         followup_index=1,
         days_since_our_reply=c.days_since_our_reply,
     )
-    return DraftedFollowup(
-        candidate=c, draft=draft, ad_used=ad_context, intel=intel
-    )
+    return DraftedFollowup(candidate=c, draft=draft, thread=thread)
 
 
 # ── Redis-backed queue + pending state ──────────────────────────────────────
@@ -459,25 +430,14 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
             continue
 
         # Prior thread summary for the Slack card — one-liner per message.
-        thread_summary = ""
-        try:
-            thread = await get_email_thread(c.prospect_email) or []
-            lines = []
-            for m in thread[:5]:
-                sender = m.get("from") or "?"
-                snippet = " ".join((m.get("body") or "").split())[:180]
-                lines.append(f"• {sender}: {snippet}")
-            thread_summary = "\n".join(lines) or "(no thread available)"
-        except Exception:
-            thread_summary = "(thread fetch failed)"
-
-        ad_preview = None
-        if drafted.ad_used:
-            ad_preview = {
-                "image_url": drafted.ad_used.get("image_url") or "",
-                "landing_product": drafted.ad_used.get("landing_product") or "",
-                "landing_url": drafted.ad_used.get("landing_url") or "",
-            }
+        # Reuses the thread already fetched during drafting to avoid a
+        # second PlusVibe round trip.
+        thread_lines = []
+        for m in (drafted.thread or [])[:5]:
+            sender = m.get("from") or "?"
+            snippet = " ".join((m.get("body") or "").split())[:180]
+            thread_lines.append(f"• {sender}: {snippet}")
+        thread_summary = "\n".join(thread_lines) or "(no thread available)"
 
         # Post to Slack. record_id = the newest email id in the thread which
         # PlusVibe accepts as reply_to_id.
@@ -487,14 +447,12 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
                 record_id=record_id,
                 first_name=c.first_name,
                 last_name=c.last_name,
-                company_name=c.company_name or drafted.intel.get("name") or "",
+                company_name=c.company_name,
                 prospect_email=c.prospect_email,
                 followup_index=1,
                 days_since_our_reply=c.days_since_our_reply,
                 prior_thread_summary=thread_summary,
                 draft_followup_text=drafted.draft,
-                ad_preview=ad_preview,
-                intel=drafted.intel,
             )
         except Exception as e:
             log.exception(f"Slack post failed for {c.prospect_email}: {e}")
@@ -523,6 +481,6 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
     return {
         "posted": len(posted),
         "posted_leads": posted,
-        "skipped_geo_or_error": skipped_geo,
+        "skipped": skipped_geo,
         "remaining": queue_size(),
     }

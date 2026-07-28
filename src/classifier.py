@@ -129,48 +129,53 @@ def _escalation_result(reason: str) -> dict:
     }
 
 
-def resolve_intent_24(
-    classification: dict,
-    active_ads: int,
-    monthly_visits: int,
-) -> dict:
+def resolve_intent_24(classification: dict) -> dict:
     """
-    Apply the section-9 conditional logic for intent 24 (what ads did you see).
+    Section 9 intent 24 ("what ads did you see") now always escalates.
 
-    Mutates and returns a copy of the classification dict with a concrete
-    disposition (draft | disregard | escalate) — never 'conditional'.
-
-    Rule (per spec):
-      active_ads == 0 AND monthly_visits < 5000  → disregard
-      active_ads == 0 AND monthly_visits >= 5000 → escalate
-      active_ads > 0                              → draft
+    Rationale: we no longer pull ad data. Answering with any specific ad
+    would be inventing detail, and answering with 'your recent Meta ads'
+    when the outreach hook cited something specific reads as evasive.
+    A human decides.
     """
     if classification.get("intent_n") != 24:
         return classification
-
     out = dict(classification)
-    if active_ads > 0:
-        out["disposition"] = "draft"
-    elif monthly_visits < 5000:
-        out["disposition"] = "disregard"
-        out["disregard_reason"] = (
-            "Under 5k monthly visits and no Meta ads indexed — the outreach "
-            "hook doesn't hold and the brand is below our qualifying floor."
-        )
-    else:
-        out["disposition"] = "escalate"
-        out["escalation_reason"] = (
-            "Prospect asked which ads we saw, but no Meta ads are indexed on "
-            "Trendtrack. Answering would either invent an ad or concede the "
-            "outreach premise was wrong."
-        )
+    out["disposition"] = "escalate"
+    out["escalation_reason"] = (
+        "Prospect asked which ads we saw. We no longer pull ad data, so "
+        "any auto-reply would either invent an ad or concede the outreach "
+        "premise. A human decides how to respond."
+    )
     return out
+
+
+# Countries hard-excluded via TLD heuristic. This replaces the previous
+# Trendtrack-based top-country check. A .in / .pk email domain is the
+# strongest cheap signal that a brand is based in an excluded market.
+_EXCLUDED_TLDS = {"in", "pk"}
+
+
+def check_tld_geography(prospect_email: str) -> str:
+    """
+    Return 'not_allowed' | 'unknown'. Never 'allowed' — we don't have
+    enough signal from a TLD to affirmatively confirm a brand is in a
+    supported country. .in / .pk are the only hard stops.
+    """
+    if not prospect_email or "@" not in prospect_email:
+        return "unknown"
+    domain = prospect_email.rsplit("@", 1)[-1].lower()
+    # Trim to the last label (e.g. "abc.co.in" → "in", "abc.pk" → "pk").
+    tld = domain.rsplit(".", 1)[-1] if "." in domain else ""
+    if tld in _EXCLUDED_TLDS:
+        return "not_allowed"
+    return "unknown"
 
 
 def promote_geo_stop(classification: dict, geography_verdict: str) -> dict:
     """
-    Apply the section-3 geography gate on top of the intent classification.
-    A 'not_allowed' verdict overrides any intent → intent 31 (stop, no reply).
+    Apply the geography gate on top of intent classification. A 'not_allowed'
+    verdict overrides any intent → intent 31 (stop, no reply).
     """
     if geography_verdict == "not_allowed":
         stop_intent = get_intent(31)
@@ -181,7 +186,7 @@ def promote_geo_stop(classification: dict, geography_verdict: str) -> dict:
             "disposition": stop_intent["disposition"],
             "reasoning": (
                 (classification.get("reasoning") or "")
-                + " | Geography gate: dominant traffic country is excluded."
+                + " | Geography gate: email TLD is in excluded set (.in / .pk)."
             ).strip(" |"),
         }
     return classification

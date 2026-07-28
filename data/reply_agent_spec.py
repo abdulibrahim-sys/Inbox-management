@@ -81,10 +81,10 @@ GEOGRAPHY
   Western Europe (Ireland, France, Germany, Netherlands, Belgium, Luxembourg,
   Austria, Switzerland, Italy, Spain, Portugal, Denmark, Sweden, Norway,
   Finland, Iceland).
-- Not India, not Pakistan. A brand whose top traffic country is India or
-  Pakistan is treated as based there and does not qualify.
-- Small traffic share from an excluded country is fine — what matters is that
-  it's not the dominant one.
+- Not India, not Pakistan. The reply agent enforces this as a TLD check —
+  any prospect emailing from a .in or .pk domain is routed to intent 31
+  (stop, no reply). Traffic-share analysis was removed with the Trendtrack
+  integration; TLD is now the sole signal.
 
 LINKS
 - Prospect-facing Calendly (for the prospect to grab a time themselves):
@@ -435,25 +435,12 @@ INTENT_LIBRARY = [
     },
     {
         "n": 24, "name": "What ads did you see",
-        "disposition": "conditional", "group": "redirect",
+        "disposition": "escalate", "group": "redirect",
         "playbook": (
-            "They're challenging the hook premise. Check the intel block for "
-            "Meta ads status BEFORE anything else.\n\n"
-            "IF active_ads == 0 AND monthly_visits < 5000 → disposition is "
-            "'disregard'. No reply drafted.\n\n"
-            "IF active_ads > 0 → keep the reference to their ads GENERIC. We "
-            "do not pull the specific ad's product or creative in this build, "
-            "so you MUST NOT name a product, a hook, or a creative detail. "
-            "Use only 'your recent Meta ads', 'your ads on Instagram/Facebook', "
-            "or 'the ones you're running right now'. Never invent a product or "
-            "creative — that's a hard rule violation. Move straight to the ask:\n"
-            "  Your recent Meta ads. Not a big deal either way, I mostly "
-            "  wanted to ask whether adding a meaningful chunk from email and "
-            "  SMS inside 2 weeks is worth 15 min of your time.\n\n"
-            "IF active_ads == 0 AND monthly_visits >= 5000 → disposition is "
-            "'escalate'. The hook claimed an ad that can't be evidenced, so "
-            "any reply either invents one or concedes the premise was wrong. "
-            "A human decides."
+            "They're challenging the hook premise. We no longer pull ad "
+            "data, so any autoreply would either invent a specific ad or "
+            "concede the outreach premise was wrong. Always escalate — a "
+            "human decides how to respond."
         ),
     },
 

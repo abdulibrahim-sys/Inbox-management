@@ -28,42 +28,14 @@ def verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
     return hmac.compare_digest(computed, signature)
 
 
-def _qualification_label(intel: dict | None) -> str:
-    """Section 7 qualification: under 3k visits AND no ads → unqualified,
-    one signal present → watch, both present → qualified."""
-    if not intel:
-        return "❓ unknown"
-    visits = intel.get("monthly_visits") or 0
-    ads = intel.get("active_ads") or 0
-    has_visits = visits >= 3000
-    has_ads = ads > 0
-    if has_visits and has_ads:
-        return "✅ qualified"
-    if has_visits or has_ads:
-        return "👀 watch"
-    return "🚫 unqualified"
-
-
-def _intel_block_mrkdwn(intel: dict | None, prospect_email: str) -> str:
-    """Render the section-7 intel block as a single mrkdwn string."""
-    if not intel:
-        return (
-            f"*✉️* `{prospect_email}`\n"
-            f"*🏬* _resolution unavailable — no Trendtrack lookup ran_"
-        )
-    geo = intel.get("geography") or {}
-    ads = intel.get("active_ads") or 0
-    ads_line = f"{ads} active" if ads > 0 else "none indexed"
-    visits = intel.get("monthly_visits") or 0
+def _summary_line(prospect_email: str, company_name: str = "") -> str:
+    """Slim one-line summary for the top of every review card."""
+    brand_line = company_name.strip() or "(unknown brand)"
+    domain = prospect_email.rsplit("@", 1)[-1] if "@" in prospect_email else ""
     return (
         f"*✉️* `{prospect_email}`\n"
-        f"*🏬* {intel.get('domain') or 'unknown'}  "
-        f"({intel.get('confidence_label') or 'unconfirmed'})\n"
-        f"*📊* {visits:,} monthly visits  _(Trendtrack)_\n"
-        f"*📣* Meta ads: {ads_line}\n"
-        f"*🌍* {geo.get('label') or 'unknown'}  "
-        f"(verdict: {geo.get('verdict') or 'unknown'})\n"
-        f"*✅* Qualification: {_qualification_label(intel)}"
+        f"*🏬* {brand_line}"
+        + (f"  _({domain})_" if domain and domain not in brand_line else "")
     )
 
 
@@ -77,15 +49,16 @@ def post_review_message(
     intent_name: str,
     original_message: str,
     draft_response: str,
-    intel: dict | None = None,
     channel_override: str = "",
 ) -> str:
     """
-    Section 7 "draft for approval" Slack message.
+    Draft-for-approval Slack card. Simplified — no Trendtrack intel; the
+    card shows only what we know from the PlusVibe lead record.
+
     Returns the message timestamp for later updates.
     """
     name_line = f"{first_name} {last_name}".strip() or "(unknown)"
-    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
+    brand_title = company_name or "(unknown brand)"
 
     blocks = [
         {
@@ -96,7 +69,7 @@ def post_review_message(
         {
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": _intel_block_mrkdwn(intel, prospect_email)},
+                     "text": _summary_line(prospect_email, company_name)},
         },
         {
             "type": "context",
@@ -161,13 +134,12 @@ def post_disregard_notification(
     intent_n: int,
     intent_name: str,
     original_message: str,
-    intel: dict | None,
     reason: str,
     channel_override: str = "",
 ) -> str:
-    """Section 7 disregard notification — no reply drafted, tells the approver why."""
+    """Disregard notification — no reply drafted, tells the approver why."""
     name_line = f"{first_name} {last_name}".strip() or "(unknown)"
-    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
+    brand_title = company_name or "(unknown brand)"
 
     blocks = [
         {
@@ -178,7 +150,7 @@ def post_disregard_notification(
         {
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": _intel_block_mrkdwn(intel, prospect_email)},
+                     "text": _summary_line(prospect_email, company_name)},
         },
         {
             "type": "context",
@@ -215,13 +187,12 @@ def post_escalation_message(
     intent_n: int,
     intent_name: str,
     original_message: str,
-    intel: dict | None,
     reason: str,
     channel_override: str = "",
 ) -> str:
-    """Section 7 escalation — needs a human."""
+    """Escalation — needs a human."""
     name_line = f"{first_name} {last_name}".strip() or "(unknown)"
-    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
+    brand_title = company_name or "(unknown brand)"
 
     blocks = [
         {
@@ -232,7 +203,7 @@ def post_escalation_message(
         {
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": _intel_block_mrkdwn(intel, prospect_email)},
+                     "text": _summary_line(prospect_email, company_name)},
         },
         {
             "type": "context",
@@ -317,139 +288,6 @@ def _update_message_status(channel: str, ts: str, status_text: str):
         pass
 
 
-def post_followup_review(
-    lead_email: str,
-    first_name: str,
-    last_name: str,
-    company_name: str,
-    stage: int,
-    draft_followup: str,
-    thread_summary: str,
-) -> str:
-    """
-    Post a follow-up review message to Slack.
-    Returns message ts for later updates.
-    """
-    stage_labels = {1: "24-hour", 2: "3-day", 3: "5-day (final)"}
-    stage_label = stage_labels.get(stage, f"Stage {stage}")
-
-    blocks = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": f"🔄 FOLLOW-UP #{stage} — {stage_label}"},
-        },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*👤 Prospect:*\n{first_name} {last_name}"},
-                {"type": "mrkdwn", "text": f"*🏢 Company:*\n{company_name}"},
-                {"type": "mrkdwn", "text": f"*📧 Email:*\n{lead_email}"},
-                {"type": "mrkdwn", "text": f"*📍 Stage:*\n{stage_label} follow-up"},
-            ],
-        },
-        {"type": "divider"},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*── Thread Context ──*\n{thread_summary[:1500]}",
-            },
-        },
-        {"type": "divider"},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*── Drafted Follow-up ──*\n{draft_followup}",
-            },
-        },
-        {
-            "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": "Approving saves as *draft in PlusVibe* for manual send."},
-            ],
-        },
-        {
-            "type": "actions",
-            "block_id": f"followup_actions_{lead_email}_{stage}",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "✅ Approve (Save Draft)"},
-                    "style": "primary",
-                    "action_id": "approve_followup",
-                    "value": json.dumps({"lead_email": lead_email, "stage": stage}),
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "❌ Deny / Edit"},
-                    "style": "danger",
-                    "action_id": "deny_edit_followup",
-                    "value": json.dumps({"lead_email": lead_email, "stage": stage}),
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "🛑 Cancel Sequence"},
-                    "action_id": "cancel_followup",
-                    "value": lead_email,
-                },
-            ],
-        },
-    ]
-
-    response = client.chat_postMessage(
-        channel=SLACK_CHANNEL_ID,
-        blocks=blocks,
-        text=f"Follow-up #{stage} for {first_name} {last_name} at {company_name} — review needed",
-    )
-    return response["ts"]
-
-
-def open_followup_edit_modal(trigger_id: str, lead_email: str, stage: int, current_draft: str):
-    """Open a Slack modal for editing a follow-up draft."""
-    meta = json.dumps({"lead_email": lead_email, "stage": stage})
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
-            "type": "modal",
-            "callback_id": "edit_followup_modal",
-            "title": {"type": "plain_text", "text": "Edit Follow-up"},
-            "submit": {"type": "plain_text", "text": "Save Draft"},
-            "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": meta,
-            "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "edited_followup",
-                    "label": {"type": "plain_text", "text": "Edit the follow-up below:"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "followup_text",
-                        "multiline": True,
-                        "initial_value": current_draft,
-                    },
-                }
-            ],
-        },
-    )
-
-
-def update_message_draft_saved(channel: str, ts: str, manager: str):
-    """Update the Slack message after follow-up draft is saved."""
-    _update_message_status(
-        channel, ts,
-        f"📝 Draft saved in PlusVibe by {manager} at <!date^{int(time.time())}^{{time}}|now>"
-    )
-
-
-def update_message_cancelled(channel: str, ts: str, manager: str):
-    """Update the Slack message after follow-up sequence is cancelled."""
-    _update_message_status(
-        channel, ts,
-        f"🛑 Sequence cancelled by {manager} at <!date^{int(time.time())}^{{time}}|now>"
-    )
-
-
 def post_call_booked_message(name: str, company: str, email: str, campaign: str = "") -> str:
     """
     Post a call booked notification with Showed / No Show / Not Qualified buttons.
@@ -526,22 +364,17 @@ def post_followup_review(
     days_since_our_reply: int,
     prior_thread_summary: str,
     draft_followup_text: str,
-    ad_preview: dict | None = None,
-    intel: dict | None = None,
     channel_override: str = "",
 ) -> str:
     """
     Post a reactivation / cadence follow-up draft to Slack.
 
-    record_id: a stable key used by the approve/deny handler. For same-thread
+    record_id: stable key used by the approve/deny handler. For same-thread
       follow-ups this is the id of the newest email in the thread (which
-      /unibox/emails/reply accepts as reply_to_id).
-    ad_preview: {"image_url", "landing_product", "landing_url"} or None. When
-      present, the Slack card renders the ad image inline so the approver can
-      confirm the tie-in matches what they'd actually send.
+      PlusVibe's /unibox/emails/reply accepts as reply_to_id).
     """
     name_line = f"{first_name} {last_name}".strip() or "(unknown)"
-    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
+    brand_title = company_name or "(unknown brand)"
 
     header_text = (
         f"🔄 Reactivation follow-up — {brand_title[:100]}"
@@ -553,7 +386,8 @@ def post_followup_review(
         {"type": "header", "text": {"type": "plain_text", "text": header_text}},
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": _intel_block_mrkdwn(intel, prospect_email)},
+            "text": {"type": "mrkdwn",
+                     "text": _summary_line(prospect_email, company_name)},
         },
         {
             "type": "context",
@@ -564,30 +398,6 @@ def post_followup_review(
             ],
         },
     ]
-
-    if ad_preview and ad_preview.get("image_url"):
-        alt_text = ad_preview.get("landing_product") or "recent ad"
-        blocks.append(
-            {
-                "type": "image",
-                "title": {
-                    "type": "plain_text",
-                    "text": f"Ad referenced: {alt_text[:60]}",
-                },
-                "image_url": ad_preview["image_url"],
-                "alt_text": alt_text[:200] or "ad",
-            }
-        )
-        if ad_preview.get("landing_url"):
-            blocks.append(
-                {
-                    "type": "context",
-                    "elements": [
-                        {"type": "mrkdwn",
-                         "text": f"↳ landing: {ad_preview['landing_url'][:200]}"},
-                    ],
-                }
-            )
 
     blocks.extend([
         {"type": "divider"},
