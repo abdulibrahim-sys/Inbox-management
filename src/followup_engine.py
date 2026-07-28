@@ -596,6 +596,6 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
     return {
         "posted": len(posted),
         "posted_leads": posted,
-        "skipped": skipped_geo,
+        "skipped": skipped,
         "remaining": queue_size(),
     }
