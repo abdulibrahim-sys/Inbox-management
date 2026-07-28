@@ -200,18 +200,39 @@ async def draft_followup(
         # New thread from a live mailbox because the original persona's
         # mailbox no longer exists in PlusVibe. Must introduce as a colleague
         # taking over — never pretend to be the original sender.
+        #
+        # Because the thread is (probably) 30+ days old, the prospect will
+        # not remember the specifics. The draft MUST include a one-line
+        # refresher of the offer so the message stands on its own even if
+        # the prospect has forgotten the earlier context entirely.
         intro_hint = (
             f"THIS IS A NEW THREAD FROM A DIFFERENT PERSONA. The original "
             f"sender ({handoff_from_persona}) has moved off this account. "
-            f"You are a colleague picking it back up. Open with a brief "
-            f"hand-off — something like 'Hey [name], picking this up from "
-            f"[first-name-of-original] who reached out about email and SMS "
-            f"for [brand] a while back' — then close the loop on the "
-            f"specific concern or question that was left open in the thread. "
-            f"Do not pretend to be the original sender. Do not say 'as I "
-            f"mentioned' — you didn't. Do not apologise for the delay. "
-            f"Use the first name of the original persona only (e.g. 'from "
-            f"Elena' from 'Elena Clifford'), not the full email address."
+            f"You are a colleague picking it back up.\n\n"
+            f"REQUIRED STRUCTURE — do not skip or reorder:\n"
+            f"1. One-line hand-off opener: 'Hey [name], picking this up from "
+            f"{handoff_from_persona} who reached out about email and SMS "
+            f"for [brand] a while back' (adapt the wording, keep it natural).\n"
+            f"2. One-line REFRESHER of the offer. The prospect almost "
+            f"certainly does not remember, so state it plainly: we "
+            f"guarantee to add a set amount of new revenue from their email "
+            f"and SMS inside 2 weeks, or they're not invoiced. IF the thread "
+            f"history above shows we previously named a specific weekly "
+            f"number (e.g. '$25k/week'), USE THAT EXACT NUMBER instead of "
+            f"'a set amount'. Never invent a number that isn't in the thread.\n"
+            f"3. One-line reference to the specific concern / question the "
+            f"prospect left open in the thread, or the natural re-entry "
+            f"point (e.g. 'you'd asked about the guarantee mechanic', "
+            f"'you'd confirmed the call but it may not have gone ahead').\n"
+            f"4. Single CTA — either the Calendly link with '15 min?', or a "
+            f"specific one-line question.\n\n"
+            f"HARD RULES: Do not pretend to be the original sender. Do not "
+            f"say 'as I mentioned' — you didn't. Do not apologise for the "
+            f"delay. Use only the first name of the original persona "
+            f"({handoff_from_persona}), not the full email address. Never "
+            f"phrase the guarantee as a refund — 'not invoiced' is correct, "
+            f"'refund' is wrong. Total length still 2-4 sentences — keep it "
+            f"tight."
         )
     elif followup_index == 1:
         intro_hint = (
