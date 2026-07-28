@@ -516,6 +516,169 @@ def update_call_outcome_message(channel: str, ts: str, name: str, company: str, 
     )
 
 
+def post_followup_review(
+    record_id: str,
+    first_name: str,
+    last_name: str,
+    company_name: str,
+    prospect_email: str,
+    followup_index: int,
+    days_since_our_reply: int,
+    prior_thread_summary: str,
+    draft_followup_text: str,
+    ad_preview: dict | None = None,
+    intel: dict | None = None,
+    channel_override: str = "",
+) -> str:
+    """
+    Post a reactivation / cadence follow-up draft to Slack.
+
+    record_id: a stable key used by the approve/deny handler. For same-thread
+      follow-ups this is the id of the newest email in the thread (which
+      /unibox/emails/reply accepts as reply_to_id).
+    ad_preview: {"image_url", "landing_product", "landing_url"} or None. When
+      present, the Slack card renders the ad image inline so the approver can
+      confirm the tie-in matches what they'd actually send.
+    """
+    name_line = f"{first_name} {last_name}".strip() or "(unknown)"
+    brand_title = (intel or {}).get("name") or company_name or "(unknown brand)"
+
+    header_text = (
+        f"🔄 Reactivation follow-up — {brand_title[:100]}"
+        if followup_index == 1
+        else f"🔄 Follow-up #{followup_index} (day {days_since_our_reply}) — {brand_title[:100]}"
+    )
+
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": header_text}},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": _intel_block_mrkdwn(intel, prospect_email)},
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn",
+                 "text": f"*👤 Prospect:* {name_line}   "
+                         f"*⏱ Days since our last reply:* {days_since_our_reply}"},
+            ],
+        },
+    ]
+
+    if ad_preview and ad_preview.get("image_url"):
+        alt_text = ad_preview.get("landing_product") or "recent ad"
+        blocks.append(
+            {
+                "type": "image",
+                "title": {
+                    "type": "plain_text",
+                    "text": f"Ad referenced: {alt_text[:60]}",
+                },
+                "image_url": ad_preview["image_url"],
+                "alt_text": alt_text[:200] or "ad",
+            }
+        )
+        if ad_preview.get("landing_url"):
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [
+                        {"type": "mrkdwn",
+                         "text": f"↳ landing: {ad_preview['landing_url'][:200]}"},
+                    ],
+                }
+            )
+
+    blocks.extend([
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Thread context (most recent first)*\n{prior_thread_summary[:1800]}",
+            },
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Drafted follow-up*\n{draft_followup_text}",
+            },
+        },
+        {
+            "type": "actions",
+            "block_id": f"followup_actions_{record_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✅ Approve & send"},
+                    "style": "primary",
+                    "action_id": "approve_followup_send",
+                    "value": record_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✏️ Edit"},
+                    "action_id": "deny_edit_followup_send",
+                    "value": record_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🚫 Skip"},
+                    "style": "danger",
+                    "action_id": "skip_followup",
+                    "value": record_id,
+                },
+            ],
+        },
+    ])
+
+    target_channel = channel_override or SLACK_CHANNEL_ID
+    response = client.chat_postMessage(
+        channel=target_channel,
+        blocks=blocks,
+        text=f"Reactivation follow-up ready for {name_line} at {brand_title}",
+    )
+    return response["ts"]
+
+
+def update_message_skipped(channel: str, ts: str, manager: str):
+    _update_message_status(
+        channel, ts,
+        f"🚫 Skipped by {manager} at <!date^{int(time.time())}^{{time}}|now>"
+    )
+
+
+def open_edit_followup_send_modal(trigger_id: str, record_id: str, current_draft: str):
+    """Edit modal for a follow-up draft. Same shape as open_edit_modal but
+    routes the submission to the follow-up send handler."""
+    client.views_open(
+        trigger_id=trigger_id,
+        view={
+            "type": "modal",
+            "callback_id": "edit_followup_send_modal",
+            "title": {"type": "plain_text", "text": "Edit follow-up"},
+            "submit": {"type": "plain_text", "text": "Send"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "private_metadata": record_id,
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "edited_followup",
+                    "label": {"type": "plain_text", "text": "Edit the follow-up:"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "followup_text",
+                        "multiline": True,
+                        "initial_value": current_draft,
+                    },
+                }
+            ],
+        },
+    )
+
+
 def post_unsubscribe_alert(first_name: str, last_name: str, company_name: str, from_email: str):
     """Post an urgent unsubscribe alert to Slack."""
     client.chat_postMessage(

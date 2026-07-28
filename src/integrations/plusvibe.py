@@ -177,17 +177,37 @@ async def get_email_thread(lead_email: str) -> list[dict]:
             response.raise_for_status()
             result = response.json()
             emails = result.get("data") or []
+            # PlusVibe unibox rows use `from_address_email` for the actual
+            # sender. The old code was reading `lead` (which is always the
+            # prospect) and lost direction info — every message looked like
+            # it came from the prospect. Reads `to_address_email_list` as
+            # the recipient field for direction cross-checks.
+            def _from(e: dict) -> str:
+                return (
+                    e.get("from_address_email")
+                    or e.get("from")
+                    or (e.get("from_address") or {}).get("email", "")
+                    if isinstance(e.get("from_address"), dict) else ""
+                ) or e.get("from_address_email", "") or ""
+
+            def _to(e: dict) -> str:
+                tos = e.get("to_address_email_list") or []
+                return tos[0] if tos else e.get("eaccount") or ""
+
             return [
                 {
                     "id": e.get("id"),
                     "message_id": e.get("message_id"),
-                    "from": e.get("lead") if e.get("is_unread") is not None else "",
+                    "from": _from(e),
+                    "to": _to(e),
                     "subject": e.get("subject", ""),
                     "body": _strip_html(
-                        e.get("body", {}).get("text", "")
+                        (e.get("body") or {}).get("text", "")
+                        or (e.get("body") or {}).get("html", "")
                         or e.get("content_preview", "")
                     ),
                     "timestamp": e.get("timestamp_created", ""),
+                    "label": e.get("label") or "",
                 }
                 for e in emails
             ]
@@ -302,21 +322,35 @@ async def list_received_emails_paginated(
     results: list[dict] = []
     cursor: Optional[str] = None
     try:
+        import asyncio as _asyncio
         async with httpx.AsyncClient(timeout=20) as client:
             for _ in range(max_pages):
                 params = dict(base_params)
                 if cursor:
                     params["page_trail"] = cursor
-                response = await client.get(
-                    f"{PLUSVIBE_BASE}/unibox/emails",
-                    headers=headers,
-                    params=params,
-                )
+                # Retry 429s with exponential backoff — PlusVibe rate-limits
+                # aggressively on paginated feeds.
+                attempts = 0
+                while True:
+                    response = await client.get(
+                        f"{PLUSVIBE_BASE}/unibox/emails",
+                        headers=headers,
+                        params=params,
+                    )
+                    if response.status_code != 429:
+                        break
+                    attempts += 1
+                    if attempts > 5:
+                        break
+                    retry_after = float(response.headers.get("retry-after") or 0) or (2 ** attempts)
+                    await _asyncio.sleep(min(retry_after, 30))
                 response.raise_for_status()
                 payload = response.json() or {}
                 page = payload.get("data") or []
                 if not page:
                     break
+                # Space out subsequent pages so we don't burn back into 429.
+                await _asyncio.sleep(0.4)
                 results.extend(page)
                 if stop_before_iso:
                     oldest = min((p.get("timestamp_created") or "") for p in page)

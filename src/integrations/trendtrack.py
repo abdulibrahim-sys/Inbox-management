@@ -76,6 +76,7 @@ async def resolve_brand(query: str) -> Optional[dict]:
 
     top = data[0]
     shop = top.get("shop") or {}
+    advertiser = top.get("advertiser") or {}
     signals = top.get("signals") or {}
     match_type = top.get("matchType") or "fuzzy"
     matched_on = top.get("matchField") or "name"
@@ -91,6 +92,7 @@ async def resolve_brand(query: str) -> Optional[dict]:
 
     return {
         "shop_id": shop.get("id") or "",
+        "advertiser_id": advertiser.get("id") or "",
         "domain": shop.get("domain") or "",
         "name": shop.get("name") or "",
         "active_ads": int(signals.get("activeAds") or 0),
@@ -217,6 +219,104 @@ def classify_geography(country_code: Optional[str], top_countries: list[dict]) -
     }
 
 
+async def list_static_ads(advertiser_id: str, limit: int = 3) -> list[dict]:
+    """
+    List the most recent ACTIVE static (image) ads for an advertiser.
+
+    Returns a list ordered newest-first, each entry:
+      { "id": "facebook_...", "image_url": "https://medias.trendtrack.io/..." }
+
+    Empty list if the API errors, if no key is set, or if the brand has no
+    active static ads. Video ads are excluded — see the follow-up spec.
+    """
+    if not API_KEY or not advertiser_id:
+        return []
+    params = {
+        "limit": str(limit),
+        "status": "active",
+        "mediaType": "image",
+        "sortBy": "newest",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{TRENDTRACK_BASE}/advertisers/{advertiser_id}/ads",
+                headers=_headers(),
+                params=params,
+            )
+            r.raise_for_status()
+            rows = r.json().get("data") or []
+    except Exception as e:
+        log.error(f"Trendtrack ad list failed for {advertiser_id}: {e}")
+        return []
+
+    result = []
+    for row in rows:
+        media = row.get("media") or {}
+        media_url = (
+            media.get("mediaUrl") if isinstance(media, dict) else None
+        ) or row.get("mediaUrl")
+        if not media_url:
+            continue
+        result.append({"id": row.get("id"), "image_url": media_url})
+    return result
+
+
+async def get_ad_detail(ad_id: str) -> Optional[dict]:
+    """
+    Pull full ad detail. Returns a normalised dict with just the fields the
+    drafter needs:
+      { "id", "image_url", "ad_copy", "cta", "landing_product",
+        "landing_url", "ad_library_url" }
+
+    None if lookup fails.
+    """
+    if not API_KEY or not ad_id:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{TRENDTRACK_BASE}/ads/{ad_id}",
+                headers=_headers(),
+            )
+            r.raise_for_status()
+            body = r.json()
+    except Exception as e:
+        log.error(f"Trendtrack ad detail failed for {ad_id}: {e}")
+        return None
+
+    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    media = data.get("media") or {}
+    content = data.get("content") or {}
+    links = data.get("links") or {}
+    return {
+        "id": data.get("id"),
+        "image_url": (media.get("mediaUrl") if isinstance(media, dict) else None) or "",
+        "ad_copy": (content.get("body") or "")[:600],
+        "cta": content.get("callToAction") or "",
+        "landing_product": content.get("ctaDescription") or "",
+        "landing_url": content.get("landingPageUrl") or links.get("landingPageUrl") or "",
+        "ad_library_url": links.get("adLibraryUrl") or "",
+    }
+
+
+async def get_top_static_ads_for_brand(advertiser_id: str, limit: int = 3) -> list[dict]:
+    """
+    Convenience wrapper for the follow-up engine.
+
+    Lists the top N static ads, then hydrates each with full detail (ad copy
+    + landing product + image URL). Returns the enriched list, dropping any
+    ads that fail to hydrate.
+    """
+    listing = await list_static_ads(advertiser_id, limit=limit)
+    hydrated = []
+    for ad in listing:
+        detail = await get_ad_detail(ad["id"])
+        if detail and detail.get("image_url"):
+            hydrated.append(detail)
+    return hydrated
+
+
 async def resolve_and_score(
     email_domain: str,
     brand_name_fallback: str = "",
@@ -269,6 +369,7 @@ async def resolve_and_score(
             "resolved": False,
             "confidence_label": "unconfirmed",
             "shop_id": "",
+            "advertiser_id": "",
             "domain": domain,
             "name": brand_name_fallback,
             "monthly_visits": 0,
@@ -292,6 +393,7 @@ async def resolve_and_score(
         "resolved": True,
         "confidence_label": confidence,
         "shop_id": result["shop_id"],
+        "advertiser_id": result.get("advertiser_id") or "",
         "domain": result["domain"],
         "name": result["name"],
         "monthly_visits": result["monthly_visits"] or (detail or {}).get("monthly_visits", 0),

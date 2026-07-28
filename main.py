@@ -50,6 +50,7 @@ from src.integrations.plusvibe import (
 )
 from src.integrations.slack import (
     SLACK_CHANNEL_ID,
+    open_edit_followup_send_modal,
     open_edit_modal,
     post_disregard_notification,
     post_escalation_message,
@@ -57,7 +58,20 @@ from src.integrations.slack import (
     post_unsubscribe_alert,
     update_message_approved,
     update_message_edited_sent,
+    update_message_skipped,
     verify_slack_signature,
+)
+from src.followup_engine import (
+    BATCH_SIZE,
+    delete_pending_followup,
+    enqueue_candidates,
+    get_pending_followup,
+    mark_skipped,
+    peek_queue,
+    post_next_batch,
+    queue_size,
+    scan_backlog,
+    store_pending_followup,
 )
 from src.integrations.trendtrack import resolve_and_score
 
@@ -448,16 +462,45 @@ async def slack_actions(request: Request, background: BackgroundTasks):
             if pending:
                 open_edit_modal(trigger_id, action_value, pending["ai_draft"])
 
+        # ── Follow-up (reactivation / cadence) actions ──
+        elif action_id == "approve_followup_send":
+            background.add_task(
+                _handle_followup_approve, action_value, manager, channel, message_ts
+            )
+        elif action_id == "deny_edit_followup_send":
+            pending = get_pending_followup(action_value)
+            if pending:
+                open_edit_followup_send_modal(trigger_id, action_value, pending["draft"])
+        elif action_id == "skip_followup":
+            background.add_task(
+                _handle_followup_skip, action_value, manager, channel, message_ts
+            )
+
     elif payload_type == "view_submission":
         manager = payload["user"]["name"]
-        email_id = payload["view"]["private_metadata"]
-        edited_text = (
-            payload["view"]["state"]["values"]
-            .get("edited_response", {})
-            .get("response_text", {})
-            .get("value", "")
-        )
-        background.add_task(_handle_edit_send, email_id, edited_text, manager)
+        callback_id = payload["view"].get("callback_id", "")
+
+        if callback_id == "edit_followup_send_modal":
+            record_id = payload["view"]["private_metadata"]
+            edited_text = (
+                payload["view"]["state"]["values"]
+                .get("edited_followup", {})
+                .get("followup_text", {})
+                .get("value", "")
+            )
+            background.add_task(
+                _handle_followup_edit_send, record_id, edited_text, manager
+            )
+        else:
+            # Initial-reply edit modal (existing flow)
+            email_id = payload["view"]["private_metadata"]
+            edited_text = (
+                payload["view"]["state"]["values"]
+                .get("edited_response", {})
+                .get("response_text", {})
+                .get("value", "")
+            )
+            background.add_task(_handle_edit_send, email_id, edited_text, manager)
 
     return Response(status_code=200)
 
@@ -505,6 +548,82 @@ async def _handle_edit_send(email_id: str, edited_text: str, manager: str):
         log.info(f"Edited and sent reply for {email_id} by {manager}")
     except Exception as e:
         log.exception(f"Failed to send edited reply: {e}")
+
+
+# ── Follow-up (backlog + cadence) handlers ──────────────────────────────────
+
+async def _handle_followup_approve(
+    record_id: str, manager: str, channel: str, message_ts: str
+) -> None:
+    """Send an approved follow-up as-drafted, same thread, same mailbox."""
+    pending = get_pending_followup(record_id)
+    if not pending:
+        log.warning(f"No pending follow-up for {record_id}")
+        return
+    try:
+        await send_reply(
+            reply_to_id=pending["reply_to_email_id"] or record_id,
+            subject=pending["subject"] or "Follow-up",
+            from_email=pending["sending_mailbox"],
+            to_email=pending["prospect_email"],
+            body=pending["draft"],
+        )
+        update_message_approved(channel, message_ts, manager)
+        delete_pending_followup(record_id)
+        log.info(
+            f"follow-up sent to {pending['prospect_email']} by {manager} "
+            f"(reactivation, mailbox={pending['sending_mailbox']})"
+        )
+    except Exception as e:
+        log.exception(f"Failed to send follow-up for {record_id}: {e}")
+
+
+async def _handle_followup_edit_send(
+    record_id: str, edited_text: str, manager: str
+) -> None:
+    pending = get_pending_followup(record_id)
+    if not pending:
+        log.warning(f"No pending follow-up for {record_id}")
+        return
+    try:
+        await send_reply(
+            reply_to_id=pending["reply_to_email_id"] or record_id,
+            subject=pending["subject"] or "Follow-up",
+            from_email=pending["sending_mailbox"],
+            to_email=pending["prospect_email"],
+            body=edited_text,
+        )
+        # The original Slack card's channel/ts are stored inside pending.
+        # We look them up via the ts we posted:
+        from src.integrations.slack import client as _sc
+        try:
+            _sc.chat_update(
+                channel=SLACK_CHANNEL_ID,
+                ts=pending["slack_ts"],
+                text=f"✏️ Edited & sent by {manager}",
+                blocks=[{
+                    "type": "section",
+                    "text": {"type": "mrkdwn",
+                             "text": f"✏️ Edited & sent by {manager}"},
+                }],
+            )
+        except Exception:
+            pass
+        delete_pending_followup(record_id)
+        log.info(f"follow-up edited+sent to {pending['prospect_email']} by {manager}")
+    except Exception as e:
+        log.exception(f"Failed to send edited follow-up for {record_id}: {e}")
+
+
+async def _handle_followup_skip(
+    record_id: str, manager: str, channel: str, message_ts: str
+) -> None:
+    pending = get_pending_followup(record_id)
+    if pending:
+        mark_skipped(pending["prospect_email"])
+        delete_pending_followup(record_id)
+    update_message_skipped(channel, message_ts, manager)
+    log.info(f"follow-up skipped for {record_id} by {manager}")
 
 
 # ── Beehiiv retry scheduler ─────────────────────────────────────────────────
@@ -711,3 +830,84 @@ async def admin_reprocess_last(background: BackgroundTasks, request: Request):
     body = await request.json()
     background.add_task(_process_reply, body)
     return {"status": "queued"}
+
+
+# ── Follow-up (backlog reactivation) admin endpoints ────────────────────────
+
+_scan_task: asyncio.Task | None = None
+
+
+@app.post("/admin/backlog/scan")
+async def admin_backlog_scan(request: Request):
+    """
+    Kick off a fresh backlog scan across the include-campaigns. Runs
+    in-process (not backgrounded) so the response returns the actual size.
+
+    Optional JSON: {"min_days": 8}. Default is 8 (past all normal follow-up
+    windows, so a single reactivation touch is safe to send).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    min_days = int((body or {}).get("min_days") or 8)
+    log.info(f"backlog scan requested (min_days={min_days})")
+
+    candidates = await scan_backlog(min_days_since_our_reply=min_days)
+    enqueued = enqueue_candidates(candidates)
+
+    preview = [
+        {
+            "prospect_email": c.prospect_email,
+            "company_name": c.company_name,
+            "campaign_name": c.campaign_name,
+            "days_since_our_reply": c.days_since_our_reply,
+            "our_last_reply_at": c.our_last_reply_at,
+        }
+        for c in candidates[:20]
+    ]
+
+    return {
+        "candidates_found": len(candidates),
+        "enqueued": enqueued,
+        "batch_size": BATCH_SIZE,
+        "preview": preview,
+    }
+
+
+@app.get("/admin/backlog/queue")
+async def admin_backlog_peek():
+    """Peek at the next 10 candidates in the queue without popping."""
+    peek = peek_queue(10)
+    return {
+        "queue_size": queue_size(),
+        "next_up": [
+            {
+                "prospect_email": c.prospect_email,
+                "company_name": c.company_name,
+                "days_since_our_reply": c.days_since_our_reply,
+                "campaign_name": c.campaign_name,
+            }
+            for c in peek
+        ],
+    }
+
+
+@app.post("/admin/backlog/next-batch")
+async def admin_backlog_next_batch(request: Request):
+    """
+    Draft + post the next batch of follow-ups to Slack.
+
+    Optional JSON: {"batch_size": 5}. Default matches BATCH_SIZE (5).
+    Returns the leads that were posted.
+
+    Recommended: call once, review the 5 Slack cards (approve / edit / skip),
+    then call again for the next 5.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    batch_size = int((body or {}).get("batch_size") or BATCH_SIZE)
+    result = await post_next_batch(batch_size)
+    return result
