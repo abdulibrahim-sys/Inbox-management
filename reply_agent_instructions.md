@@ -50,6 +50,7 @@ _Section-12 open items resolved 2026-07-28 by the user and baked in below._
 - "You don't pay" means "you're not invoiced until we hit the number". Never phrase it as a refund.
 - Attribution: 5 day open, 5 day click, default window
 - Only revenue from the flows, campaigns and pop ups Trendfeed builds counts. Existing infrastructure is excluded.
+- Scope covers both retention on the existing list AND list growth. We build pop ups, opt in offers, and other capture mechanisms to bring new subscribers in, and any revenue those new opt ins generate through flows / campaigns we build counts towards the guarantee. A small list or stuck growth is something we work on, not a reason we can't help.
 - Subscription brands: recurring subscription revenue excluded via a custom Placed Order metric if they don't already have one
 - Clock starts on first send live. Trendfeed can be live inside 5 days.
 - No setup fees, no onboarding fees, no hidden fees

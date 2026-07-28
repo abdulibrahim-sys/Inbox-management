@@ -38,6 +38,12 @@ OFFER
 - Attribution: 5 day open, 5 day click, default window
 - Only revenue from the flows, campaigns and pop ups Trendfeed builds counts.
   Existing infrastructure is excluded.
+- Scope covers both retention on the existing list AND list growth. We
+  build pop ups, opt in offers, and other capture mechanisms to bring new
+  subscribers in, and any revenue that comes from those new opt ins
+  through flows / campaigns we build counts towards the guarantee too.
+  So if a prospect says the list is small or growth is stuck, that's
+  something we work on, not a reason we can't help.
 - Subscription brands: recurring subscription revenue excluded via a custom
   Placed Order metric if they don't already have one
 - Clock starts on first send live. Trendfeed can be live inside 5 days.
@@ -387,10 +393,14 @@ INTENT_LIBRARY = [
         "disposition": "draft", "group": "redirect",
         "playbook": (
             "Don't disqualify. Don't mention the 70k criteria unless they "
-            "ask outright.\n"
+            "ask outright. Note that list-growth work is part of our scope, "
+            "so a small list is a starting point rather than a stopper — "
+            "the drafter may reference this if the prospect explicitly frames "
+            "list size as the reason to pass.\n"
             "Happy to talk either way. At your size there are usually a "
-            "couple of things worth fixing before anything clever, and we'll "
-            "tell you straight if the guarantee doesn't stack up yet.\n"
+            "couple of things worth fixing on the list you've got, and we "
+            "also build the pop ups and opt in offers to grow it, so both "
+            "sides move.\n"
             "What's live today, flows only or campaigns as well?"
         ),
     },
