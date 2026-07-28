@@ -866,17 +866,23 @@ async def admin_backlog_scan(request: Request):
     Kick off a fresh backlog scan across the include-campaigns. Runs
     in-process (not backgrounded) so the response returns the actual size.
 
-    Optional JSON: {"min_days": 8}. Default is 8 (past all normal follow-up
-    windows, so a single reactivation touch is safe to send).
+    Optional JSON:
+      {"min_days": 8}      — minimum age of our last reply (default 8)
+      {"lookback_days": 180} — how far back to enumerate INTERESTED leads
+                               (default 180 = 6 months)
     """
     try:
         body = await request.json()
     except Exception:
         body = {}
     min_days = int((body or {}).get("min_days") or 8)
-    log.info(f"backlog scan requested (min_days={min_days})")
+    lookback_days = int((body or {}).get("lookback_days") or 180)
+    log.info(f"backlog scan requested (min_days={min_days}, lookback={lookback_days})")
 
-    candidates = await scan_backlog(min_days_since_our_reply=min_days)
+    candidates = await scan_backlog(
+        min_days_since_our_reply=min_days,
+        max_lookback_days=lookback_days,
+    )
     enqueued = enqueue_candidates(candidates)
 
     preview = [

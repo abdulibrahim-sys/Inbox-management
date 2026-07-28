@@ -108,19 +108,24 @@ class BacklogCandidate:
         return f"followup:pending:{self.prospect_email}"
 
 
-async def scan_backlog(min_days_since_our_reply: int = 8) -> list[BacklogCandidate]:
+async def scan_backlog(
+    min_days_since_our_reply: int = 8,
+    max_lookback_days: int = 180,
+) -> list[BacklogCandidate]:
     """
     Walk every INTERESTED lead in BACKLOG_CAMPAIGNS. Return the list of
     prospects where:
       - the latest message in the thread was from US, and
       - it was at least `min_days_since_our_reply` days ago, and
+      - the INTERESTED tag was applied within `max_lookback_days` (default
+        180 — 6 months of backlog per the 2026-07-28 widening), and
       - the prospect never came back to it.
 
     Deduped by prospect email (a lead in two campaigns counts once, keyed on
     whichever campaign's thread is newer).
     """
     cutoff_iso = (
-        datetime.now(timezone.utc) - timedelta(days=90)
+        datetime.now(timezone.utc) - timedelta(days=max_lookback_days)
     ).isoformat().replace("+00:00", "Z")
 
     interested_by_email: dict[str, dict] = {}
