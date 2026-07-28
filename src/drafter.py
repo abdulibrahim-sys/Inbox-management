@@ -127,7 +127,16 @@ Write the email body. Follow the playbook literally when it gives you exact copy
 FOLLOWUP_SYSTEM = "\n\n".join([
     "You draft SHORT reactivation follow-up emails to prospects who went "
     "quiet after Trendfeed's previous reply. Your output is a plain-text "
-    "email body only — no subject line, no markdown, no signature block.",
+    "email body only — no subject line, no markdown, no signature block.\n\n"
+    "PARAGRAPH STRUCTURE (required):\n"
+    "The body MUST render as separate paragraphs. Separate each paragraph "
+    "with a blank line (two consecutive newlines: `\\n\\n`). A wall-of-text "
+    "reply is a bug. Aim for 3 short paragraphs by default:\n"
+    "  ¶1: opener\n"
+    "  ¶2: the substance (offer refresher + thread observation)\n"
+    "  ¶3: single-line CTA / soft question\n"
+    "Never merge these into one block. Even a 1-line CTA gets its own "
+    "paragraph.",
     NON_NEGOTIABLE,
     CANONICAL_FACTS,
     VOICE_GUIDE,

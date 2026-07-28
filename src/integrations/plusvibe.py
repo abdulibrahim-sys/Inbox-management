@@ -117,7 +117,7 @@ async def send_reply(reply_to_id: str, subject: str, from_email: str, to_email: 
         "subject": subject if subject.startswith("Re:") else f"Re: {subject}",
         "from": from_email,
         "to": to_email,
-        "body": body,
+        "body": _plain_to_html(body),
     }
 
     import logging
@@ -434,6 +434,43 @@ async def get_campaign_stats(campaign_id: str, start_date: str, end_date: str) -
     return None
 
 
+def _plain_to_html(body: str) -> str:
+    """
+    PlusVibe's compose + reply endpoints render body as HTML. Plain-text
+    paragraph breaks (`\\n\\n`) collapse to a single space in the rendered
+    email, producing a wall of text.
+
+    Convert paragraphs (separated by blank lines) to `<div>` blocks and
+    convert single-newline line breaks inside a paragraph to `<br>`. The
+    result renders with real paragraph spacing in every mail client.
+
+    Idempotent-ish: if the body already looks like HTML (contains a tag),
+    pass it through untouched — the drafter shouldn't emit HTML, but if
+    a caller pre-formats, don't double-wrap.
+    """
+    if not body:
+        return ""
+    import re
+    if re.search(r"<(div|p|br|a|strong|em|span)\b", body, re.I):
+        return body
+    # Normalise \r\n to \n
+    text = body.replace("\r\n", "\n").strip()
+    # Split into paragraphs on blank lines
+    paragraphs = re.split(r"\n\s*\n", text)
+    parts = []
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        # Preserve intra-paragraph line breaks
+        p_html = p.replace("\n", "<br>")
+        parts.append(f"<div>{p_html}</div>")
+    if not parts:
+        return f"<div>{text}</div>"
+    # Blank <div> between paragraphs = visible gap in most mail clients
+    return "<div>&nbsp;</div>".join(parts)
+
+
 async def send_new_email(
     from_email: str, to_email: str, subject: str, body: str,
     camp_id: str, lead_id: str,
@@ -467,7 +504,7 @@ async def send_new_email(
         "lead_id": lead_id,
         "from": from_email,
         "subject": subject,
-        "body": body,
+        "body": _plain_to_html(body),
     }
     import logging
     log = logging.getLogger(__name__)
