@@ -80,6 +80,13 @@ from src.followup_engine import (
     scan_backlog,
     store_pending_followup,
 )
+from src.never_replied_engine import (
+    enqueue_candidates as nr_enqueue,
+    peek_queue as nr_peek,
+    post_next_batch as nr_post_next_batch,
+    queue_size as nr_queue_size,
+    scan_never_replied,
+)
 # ── Active campaigns (PlusVibe) ──────────────────────────────────────────────
 # All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply). Add / remove
 # campaign IDs here as they're launched or paused in PlusVibe. The unibox
@@ -939,4 +946,83 @@ async def admin_backlog_next_batch(request: Request):
         body = {}
     batch_size = int((body or {}).get("batch_size") or BATCH_SIZE)
     result = await post_next_batch(batch_size)
+    return result
+
+
+# ── Never-replied (they wrote, we ghosted) admin endpoints ─────────────────
+
+@app.post("/admin/never-replied/scan")
+async def admin_never_replied_scan(request: Request):
+    """
+    Enumerate INTERESTED prospects whose latest thread message is FROM THEM
+    (we never responded). Optional JSON:
+      {"min_days": 8}         — how stale before we include (default 8)
+      {"lookback_days": 180}  — how far back to search (default 180)
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    min_days = int((body or {}).get("min_days") or 8)
+    lookback = int((body or {}).get("lookback_days") or 180)
+    log.info(f"never_replied scan requested (min={min_days}, lookback={lookback})")
+
+    candidates = await scan_never_replied(
+        min_days_since_prospect_msg=min_days,
+        max_lookback_days=lookback,
+    )
+    enqueued = nr_enqueue(candidates)
+
+    preview = [
+        {
+            "prospect_email": c.prospect_email,
+            "company_name": c.company_name,
+            "campaign_name": c.campaign_name,
+            "days_since_prospect_msg": c.days_since_prospect_msg,
+            "prospect_msg_at": c.prospect_msg_at,
+        }
+        for c in candidates[:25]
+    ]
+    return {
+        "candidates_found": len(candidates),
+        "enqueued": enqueued,
+        "batch_size": BATCH_SIZE,
+        "preview": preview,
+    }
+
+
+@app.get("/admin/never-replied/queue")
+async def admin_never_replied_peek():
+    """Peek at the next 10 never-replied candidates."""
+    peek = nr_peek(10)
+    return {
+        "queue_size": nr_queue_size(),
+        "next_up": [
+            {
+                "prospect_email": c.prospect_email,
+                "company_name": c.company_name,
+                "days_since_prospect_msg": c.days_since_prospect_msg,
+                "campaign_name": c.campaign_name,
+            }
+            for c in peek
+        ],
+    }
+
+
+@app.post("/admin/never-replied/next-batch")
+async def admin_never_replied_next_batch(request: Request):
+    """
+    Draft + post the next batch of never-replied initial replies to Slack.
+
+    Optional JSON: {"batch_size": 5}. Default 5.
+    Returns leads that were posted, plus any leads whose classifier
+    disposition wasn't 'draft' (escalate/disregard/stop/etc.) for
+    visibility.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    batch_size = int((body or {}).get("batch_size") or BATCH_SIZE)
+    result = await nr_post_next_batch(batch_size)
     return result

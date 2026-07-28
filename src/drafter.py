@@ -73,12 +73,22 @@ async def draft_reply(
     company_name: str,
     prospect_email: str = "",
     thread: Optional[list[dict]] = None,
+    handoff_from_persona: str = "",
+    days_since_their_message: int = 0,
 ) -> str:
     """
     Draft a reply for a classified intent. Returns the email body only.
 
     Raises ValueError if disposition isn't 'draft' — caller should route
     non-draft dispositions to the appropriate Slack message instead.
+
+    handoff_from_persona: set when the original sending mailbox is dead and
+      we're picking up from a fresh mailbox. Adds a colleague-taking-over
+      opener AND removes all URLs (fresh mailbox with no reputation on the
+      prospect's domain). The intent playbook's answer still runs — we just
+      defer any link with 'OK if I send it over?' framing.
+    days_since_their_message: shapes the delay-acknowledgement. Only surfaced
+      when > 30 days AND handoff_from_persona is set.
     """
     disposition = classification.get("disposition")
     if disposition != "draft":
@@ -90,6 +100,34 @@ async def draft_reply(
     intent = get_intent(classification.get("intent_n") or 0)
     prior_outbound = _count_prior_outbound(thread or [], prospect_email)
     move = 2 if prior_outbound >= 1 else 1
+
+    handoff_block = ""
+    if handoff_from_persona:
+        handoff_block = f"""
+
+HAND-OFF MODE — the original sender's mailbox no longer exists in PlusVibe,
+so this reply goes out from a fresh mailbox the prospect has never received
+from. RULES (in addition to the intent playbook):
+
+1. Open with a one-line hand-off: 'Hey [name], picking this up from
+   {handoff_from_persona} who was in touch about email and SMS for [brand]
+   — apologies for the slow reply on your question.' Keep it short.
+2. Then answer their question using the intent playbook, exactly as
+   written. Don't sell twice.
+3. ZERO LINKS in this message. No Calendly, no Gamma deck, no bare
+   domains. This is a fresh mailbox with no domain reputation. If the
+   playbook has a link, replace that CTA with 'OK if I send that over?'
+   or 'Want me to send you a fresh calendar link + case studies?' — the
+   next message (after they reply) is where the link goes.
+4. Original persona name: the system guess is '{handoff_from_persona}'.
+   If that looks off (initials, run-on lower-case), scan the thread for
+   a real sign-off name and use that; fall back to 'my colleague' if
+   truly nothing.
+5. Do not apologise more than once. Do not say 'as I mentioned' —
+   {handoff_from_persona} did, you didn't.
+6. Structure: 3 short paragraphs separated by blank lines — opener /
+   substantive answer / permission-to-send ask.
+"""
 
     user_prompt = f"""INTENT SELECTED (from classifier):
   {intent['n']}. {intent['name']}
@@ -110,7 +148,7 @@ Prospect's message:
 \"\"\"
 {prospect_body[:2500]}
 \"\"\"
-
+{handoff_block}
 Write the email body. Follow the playbook literally when it gives you exact copy — you may lightly adapt one or two words for flow if the prospect's wording demands it, but do not add sentences the playbook doesn't have and do not remove ones it does. Follow the VOICE and NON-NEGOTIABLE rules from the system prompt. Output the body only — no subject line, no markdown, no signature block beyond an optional first-name sign-off."""
 
     response = await _get_client().messages.create(
