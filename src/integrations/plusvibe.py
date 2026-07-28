@@ -436,40 +436,93 @@ async def get_campaign_stats(campaign_id: str, start_date: str, end_date: str) -
 
 async def send_new_email(
     from_email: str, to_email: str, subject: str, body: str,
+    camp_id: str, lead_id: str,
 ) -> dict:
     """
-    Send a fresh (non-reply) email via PlusVibe's unibox. Used by the
-    follow-up engine when the original sending mailbox has been removed
-    from PlusVibe — we can't continue the old thread so we open a new one
-    from a live mailbox.
+    Send a fresh (non-reply) email via PlusVibe's compose endpoint. Used by
+    the follow-up engine when the original sending mailbox has been removed
+    from PlusVibe — we open a new thread from a live mailbox.
 
-    Different endpoint from send_reply: /unibox/emails/send accepts an
-    arbitrary from/to/subject/body without a reply_to_id parent.
+    We use /unibox/emails/compose (not /unibox/emails/send) because /send
+    accepts payloads and silently drops them, while /compose actually
+    delivers. compose requires camp_id + lead_id — the send appears in the
+    unibox and threads into that campaign's activity even if the campaign
+    is paused. Discovered by trial 2026-07-28.
+
+    Note the paired lookup:
+      1. Call get_lead_records(to_email) to find valid (camp_id, lead_id)
+         tuples for the prospect
+      2. Prefer a record on an active campaign; fall back to any campaign
     """
+    if not (camp_id and lead_id):
+        raise ValueError("send_new_email requires camp_id and lead_id")
+
     headers = {
         "x-api-key": API_KEY,
         "Content-Type": "application/json",
     }
     params = {"workspace_id": WORKSPACE_ID}
     payload = {
-        "subject": subject if not subject.lower().startswith("re:") else subject,
+        "camp_id": camp_id,
+        "lead_id": lead_id,
         "from": from_email,
-        "to": to_email,
+        "subject": subject,
         "body": body,
     }
     import logging
     log = logging.getLogger(__name__)
-    log.info(f"send_new_email: from={from_email}, to={to_email}")
+    log.info(
+        f"send_new_email: from={from_email} to={to_email} "
+        f"camp={camp_id} lead={lead_id}"
+    )
 
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
-            f"{PLUSVIBE_BASE}/unibox/emails/send",
+            f"{PLUSVIBE_BASE}/unibox/emails/compose",
             headers=headers, params=params, json=payload,
         )
         if response.status_code != 200:
             log.error(f"send_new_email error {response.status_code}: {response.text}")
         response.raise_for_status()
         return response.json()
+
+
+async def get_lead_records(email: str) -> list[dict]:
+    """
+    Return every (lead_id, campaign_id) tuple PlusVibe has for the prospect.
+
+    /lead/get returns one row per (email, campaign) pair — a lead added to
+    5 campaigns has 5 rows. We surface the raw pair list so the caller can
+    pick which campaign context to send under (prefer active > paused >
+    archived).
+
+    Each entry: {"lead_id": str, "campaign_id": str}
+    """
+    if not email:
+        return []
+    headers = {"x-api-key": API_KEY}
+    params = {"workspace_id": WORKSPACE_ID, "email": email}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/lead/get",
+                headers=headers, params=params,
+            )
+            response.raise_for_status()
+            rows = response.json()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"get_lead_records failed ({email}): {e}")
+        return []
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for r in rows:
+        lead_id = str(r.get("_id") or r.get("id") or "")
+        camp_id = str(r.get("campaign") or r.get("campaign_id") or "")
+        if lead_id and camp_id:
+            out.append({"lead_id": lead_id, "campaign_id": camp_id})
+    return out
 
 
 async def list_live_mailboxes(

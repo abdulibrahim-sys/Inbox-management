@@ -35,6 +35,7 @@ from src.drafter import draft_followup
 from src.integrations.plusvibe import (
     get_email_thread,
     get_lead_data,
+    get_lead_records,
     list_live_mailboxes,
     list_received_emails_paginated,
 )
@@ -237,6 +238,12 @@ class DraftedFollowup:
     #                            body is written as a colleague hand-off
     send_mode: str = "reply"
     send_from_mailbox: str = ""
+    # For send_mode="new_thread" only — the (camp_id, lead_id) pair
+    # /unibox/emails/compose needs. Resolved via get_lead_records at draft
+    # time so a stale campaign paused between draft and approve doesn't
+    # break the send.
+    send_camp_id: str = ""
+    send_lead_id: str = ""
 
 
 # TLD-based geography check reused from the reply agent path.
@@ -312,6 +319,9 @@ async def draft_for_candidate(
         else True  # unknown → assume live (falls back to error path if not)
     )
 
+    send_camp_id = ""
+    send_lead_id = ""
+
     if original_is_live:
         send_mode = "reply"
         send_from = c.sending_mailbox
@@ -329,6 +339,21 @@ async def draft_for_candidate(
         send_from = picked["email"]
         handoff_from = _persona_first_name(c.sending_mailbox) or "a colleague"
 
+        # Resolve (camp_id, lead_id) — /unibox/emails/compose requires them.
+        # Prefer a record on one of the currently-active campaigns; fall back
+        # to any campaign the lead exists in.
+        records = await get_lead_records(c.prospect_email)
+        active = [r for r in records if r["campaign_id"] in ACTIVE_CAMPAIGN_IDS]
+        chosen = active[0] if active else (records[0] if records else None)
+        if not chosen:
+            log.warning(
+                f"follow-up: no lead records for {c.prospect_email}, "
+                f"cannot compose a new-thread send, skipping"
+            )
+            return None
+        send_camp_id = chosen["campaign_id"]
+        send_lead_id = chosen["lead_id"]
+
     draft = await draft_followup(
         thread=thread,
         first_name=c.first_name or "",
@@ -344,6 +369,8 @@ async def draft_for_candidate(
         thread=thread,
         send_mode=send_mode,
         send_from_mailbox=send_from,
+        send_camp_id=send_camp_id,
+        send_lead_id=send_lead_id,
     )
 
 
@@ -578,6 +605,8 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
             "sending_mailbox": drafted.send_from_mailbox,
             "original_sending_mailbox": c.sending_mailbox,
             "send_mode": drafted.send_mode,
+            "send_camp_id": drafted.send_camp_id,
+            "send_lead_id": drafted.send_lead_id,
             "subject": c.reply_to_subject,
             "draft": drafted.draft,
             "slack_ts": slack_ts,

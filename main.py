@@ -554,11 +554,21 @@ async def _send_followup(pending: dict, body: str) -> None:
             clean_subject = clean_subject[3:].lstrip()
         if not clean_subject:
             clean_subject = "Quick follow-up on email + SMS"
+        camp_id = pending.get("send_camp_id") or ""
+        lead_id = pending.get("send_lead_id") or ""
+        if not (camp_id and lead_id):
+            raise ValueError(
+                f"pending has no send_camp_id/send_lead_id — "
+                f"can't compose new-thread send for "
+                f"{pending.get('prospect_email','?')}"
+            )
         await send_new_email(
             from_email=pending["sending_mailbox"],
             to_email=pending["prospect_email"],
             subject=clean_subject,
             body=body,
+            camp_id=camp_id,
+            lead_id=lead_id,
         )
     else:
         await send_reply(
