@@ -201,10 +201,12 @@ async def draft_followup(
         # mailbox no longer exists in PlusVibe. Must introduce as a colleague
         # taking over — never pretend to be the original sender.
         #
-        # Because the thread is (probably) 30+ days old, the prospect will
-        # not remember the specifics. The draft MUST include a one-line
-        # refresher of the offer so the message stands on its own even if
-        # the prospect has forgotten the earlier context entirely.
+        # Deliverability constraint (2026-07-28): this email is coming from
+        # a mailbox the prospect has NEVER received from. ANY link in this
+        # first message hurts deliverability. Zero links — not the Calendly,
+        # not the Gamma case-studies deck, nothing. The CTA is a soft
+        # question inviting reply, and the case studies + calendar link only
+        # get sent on the FOLLOWING message once they've engaged.
         intro_hint = (
             f"THIS IS A NEW THREAD FROM A DIFFERENT PERSONA. The original "
             f"sender ({handoff_from_persona}) has moved off this account. "
@@ -213,26 +215,47 @@ async def draft_followup(
             f"1. One-line hand-off opener: 'Hey [name], picking this up from "
             f"{handoff_from_persona} who reached out about email and SMS "
             f"for [brand] a while back' (adapt the wording, keep it natural).\n"
-            f"2. One-line REFRESHER of the offer. The prospect almost "
-            f"certainly does not remember, so state it plainly: we "
-            f"guarantee to add a set amount of new revenue from their email "
-            f"and SMS inside 2 weeks, or they're not invoiced. IF the thread "
-            f"history above shows we previously named a specific weekly "
-            f"number (e.g. '$25k/week'), USE THAT EXACT NUMBER instead of "
-            f"'a set amount'. Never invent a number that isn't in the thread.\n"
+            f"2. One-line REFRESHER of the specific offer we made them. Look "
+            f"CAREFULLY at the thread history for the exact revenue number, "
+            f"time window, and mechanic we quoted (e.g. 'add $25k/week in "
+            f"new revenue in 14 days, or you don't pay'). If a specific "
+            f"number appears in the thread, USE IT VERBATIM in the refresher. "
+            f"If the thread only shows a generic offer with no specific "
+            f"number, describe the guarantee mechanic: 'we guarantee new "
+            f"revenue attributed to email and SMS inside 2 weeks, or you're "
+            f"not invoiced'. Never invent a number that isn't in the thread. "
+            f"Never phrase the guarantee as a refund — 'not invoiced' is the "
+            f"right wording.\n"
             f"3. One-line reference to the specific concern / question the "
             f"prospect left open in the thread, or the natural re-entry "
-            f"point (e.g. 'you'd asked about the guarantee mechanic', "
-            f"'you'd confirmed the call but it may not have gone ahead').\n"
-            f"4. Single CTA — either the Calendly link with '15 min?', or a "
-            f"specific one-line question.\n\n"
-            f"HARD RULES: Do not pretend to be the original sender. Do not "
-            f"say 'as I mentioned' — you didn't. Do not apologise for the "
-            f"delay. Use only the first name of the original persona "
-            f"({handoff_from_persona}), not the full email address. Never "
-            f"phrase the guarantee as a refund — 'not invoiced' is correct, "
-            f"'refund' is wrong. Total length still 2-4 sentences — keep it "
-            f"tight."
+            f"point (e.g. 'you'd asked which brands we do this for', 'you'd "
+            f"confirmed the call but it may not have gone ahead').\n"
+            f"4. Reply-inviting CTA. NO LINKS in this message — not the "
+            f"Calendly, not the Gamma case-studies deck, none. Instead ask "
+            f"a soft question that invites a reply, and dangle the case "
+            f"studies + calendar as something you'll send if they're open "
+            f"to it. Two example patterns you can adapt (do not paste "
+            f"verbatim):\n"
+            f"   'Still worth 15 min? If yes I'll send over our case studies "
+            f"   and a fresh time to grab.'\n"
+            f"   'Want me to send our case studies and a fresh calendar link?'\n\n"
+            f"HARD DELIVERABILITY RULE: Zero URLs, zero calendar links, zero "
+            f"deck links. Not even a bare domain. If your draft contains "
+            f"'http', 'https', 'calendly', 'gamma', '.co/', or any other URL "
+            f"fragment, rewrite it. This mailbox has no prior reputation "
+            f"with the prospect's domain.\n\n"
+            f"HARD FRAMING RULES: Do not pretend to be the original sender. "
+            f"Do not say 'as I mentioned' — you didn't. Do not apologise "
+            f"for the delay. Total length still 2-4 sentences — keep it tight.\n\n"
+            f"ORIGINAL PERSONA NAME: The system's best guess for the "
+            f"previous sender's first name is '{handoff_from_persona}'. If "
+            f"that looks like a real first name (Crystal, Mia, Jack), use "
+            f"it. If it looks off — initials like 'Ml', a run-on like "
+            f"'Owenalderton', or something clearly not a first name — "
+            f"SCAN THE THREAD HISTORY for the sender's real sign-off name "
+            f"(they usually sign off 'Crystal' / 'Mia Lowell' / 'Best, Jack' "
+            f"etc.) and use that instead. If you can't find a real name "
+            f"anywhere, use 'my colleague' rather than '{handoff_from_persona}'."
         )
     elif followup_index == 1:
         intro_hint = (
