@@ -434,6 +434,112 @@ async def get_campaign_stats(campaign_id: str, start_date: str, end_date: str) -
     return None
 
 
+async def send_new_email(
+    from_email: str, to_email: str, subject: str, body: str,
+) -> dict:
+    """
+    Send a fresh (non-reply) email via PlusVibe's unibox. Used by the
+    follow-up engine when the original sending mailbox has been removed
+    from PlusVibe — we can't continue the old thread so we open a new one
+    from a live mailbox.
+
+    Different endpoint from send_reply: /unibox/emails/send accepts an
+    arbitrary from/to/subject/body without a reply_to_id parent.
+    """
+    headers = {
+        "x-api-key": API_KEY,
+        "Content-Type": "application/json",
+    }
+    params = {"workspace_id": WORKSPACE_ID}
+    payload = {
+        "subject": subject if not subject.lower().startswith("re:") else subject,
+        "from": from_email,
+        "to": to_email,
+        "body": body,
+    }
+    import logging
+    log = logging.getLogger(__name__)
+    log.info(f"send_new_email: from={from_email}, to={to_email}")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{PLUSVIBE_BASE}/unibox/emails/send",
+            headers=headers, params=params, json=payload,
+        )
+        if response.status_code != 200:
+            log.error(f"send_new_email error {response.status_code}: {response.text}")
+        response.raise_for_status()
+        return response.json()
+
+
+async def list_live_mailboxes(
+    active_campaign_ids: list[str] | None = None,
+    min_warmup_days: int = 21,
+) -> list[dict]:
+    """
+    Return every mailbox connected to PlusVibe that's actually safe to send
+    live outbound from. Filter chain (user's constraints, 2026-07-28):
+
+    - status == ACTIVE (case-insensitive)
+    - provider == GOOGLE_WORKSPACE — Google only, no Outlook/Microsoft365
+    - warmup enabled at least `min_warmup_days` ago — skip pre-warmed
+      mailboxes that are still ramping through initial reputation
+
+    active_campaign_ids: retained for the API surface but no longer applied
+      as a filter — account/list's cmps field is nested inside `payload` and
+      not reliably populated, so we accept any mature Google mailbox. Pass
+      the argument through if you want it available in future without a
+      breaking change.
+
+    Each entry: {email, provider, warmup_days, status, warmup_status}.
+    """
+    from datetime import datetime, timezone
+
+    headers = {"x-api-key": API_KEY}
+    params = {"workspace_id": WORKSPACE_ID}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                f"{PLUSVIBE_BASE}/account/list",
+                headers=headers, params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"list_live_mailboxes failed: {e}")
+        return []
+
+    accounts = data.get("accounts", []) if isinstance(data, dict) else []
+    now = datetime.now(timezone.utc)
+    result = []
+    for a in accounts:
+        if (a.get("status") or "").upper() != "ACTIVE":
+            continue
+        if (a.get("provider") or "").upper() != "GOOGLE_WORKSPACE":
+            continue
+        # Warmup age
+        enb = a.get("warmup_enb_dt") or ""
+        warmup_days = 0
+        if enb:
+            try:
+                wd = datetime.fromisoformat(enb.replace("Z", "+00:00"))
+                warmup_days = (now - wd).days
+            except Exception:
+                pass
+        if warmup_days < min_warmup_days:
+            continue
+
+        result.append({
+            "email": a.get("email", ""),
+            "provider": a.get("provider", ""),
+            "status": a.get("status", ""),
+            "warmup_status": a.get("warmup_status", ""),
+            "warmup_days": warmup_days,
+        })
+    return result
+
+
 async def list_campaign_mailboxes(campaign_id: str) -> list[dict]:
     """
     Return mailboxes (sending accounts) attached to a campaign.

@@ -460,6 +460,28 @@ def update_message_skipped(channel: str, ts: str, manager: str):
     )
 
 
+def post_send_failure_notice(
+    channel: str,
+    ts: str,
+    prospect_email: str,
+    error: str,
+    manager: str = "",
+):
+    """Reply in-thread on the original review card so the approver knows the
+    send failed and what happened. Keeps the buttons intact so they can retry
+    after the underlying issue is fixed."""
+    text = (
+        f"⚠️  Send failed for `{prospect_email}` — {error[:400]}"
+        + (f"\n(approved by {manager})" if manager else "")
+    )
+    try:
+        client.chat_postMessage(
+            channel=channel, thread_ts=ts, text=text,
+        )
+    except SlackApiError:
+        pass
+
+
 def open_edit_followup_send_modal(trigger_id: str, record_id: str, current_draft: str):
     """Edit modal for a follow-up draft. Same shape as open_edit_modal but
     routes the submission to the follow-up send handler."""

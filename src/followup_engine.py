@@ -35,6 +35,7 @@ from src.drafter import draft_followup
 from src.integrations.plusvibe import (
     get_email_thread,
     get_lead_data,
+    list_live_mailboxes,
     list_received_emails_paginated,
 )
 from src.integrations.slack import post_followup_review
@@ -229,20 +230,65 @@ class DraftedFollowup:
     candidate: BacklogCandidate
     draft: str
     thread: list[dict] = field(default_factory=list)
+    # Send routing — set at draft time based on whether the original
+    # sending mailbox is still connected to PlusVibe.
+    #   send_mode="reply"      → continue same thread, send from sending_mailbox
+    #   send_mode="new_thread" → open a fresh thread from send_from_mailbox,
+    #                            body is written as a colleague hand-off
+    send_mode: str = "reply"
+    send_from_mailbox: str = ""
 
 
 # TLD-based geography check reused from the reply agent path.
 from src.classifier import check_tld_geography  # noqa: E402
 
 
-async def draft_for_candidate(c: BacklogCandidate) -> Optional[DraftedFollowup]:
+# The follow-up engine cycles through live mailboxes attached to a current
+# active campaign — see main.py::ACTIVE_CAMPAIGNS. Set at scan time and
+# reused across the batch to avoid re-hitting /account/list per candidate.
+ACTIVE_CAMPAIGN_IDS: list[str] = [
+    "6a4bb4325d0a8ff67b02b811",  # Ai-ark-big brands - Copy
+    "6a60f7d25756c23899f6bbd2",  # 2 weeks - july
+]
+
+
+def _persona_first_name(mailbox: str) -> str:
+    """Try to pull a plausible first name from a mailbox like
+    'crystal.r@trendfeed.pro' → 'Crystal', 'j-hartington@...' → 'J',
+    'admin@...' → '' (return empty when it doesn't look like a name)."""
+    if not mailbox or "@" not in mailbox:
+        return ""
+    local = mailbox.split("@")[0].lower()
+    # Trim numbers + common suffix chars
+    for sep in [".", "_", "-", "+"]:
+        if sep in local:
+            local = local.split(sep)[0]
+            break
+    if local in {"admin", "info", "hello", "hi", "support", "team", "sales"}:
+        return ""
+    if not local.isalpha() or len(local) < 2:
+        return ""
+    return local.capitalize()
+
+
+async def draft_for_candidate(
+    c: BacklogCandidate,
+    live_mailboxes: list[dict] | None = None,
+    live_by_email: set[str] | None = None,
+    picker_index: int = 0,
+) -> Optional[DraftedFollowup]:
     """
     Build context for one candidate and produce the follow-up draft.
 
-    Personalisation is thread-only (no brand research). Skips leads where
-    the email TLD is in the excluded set (.in / .pk) — those shouldn't have
-    been outreached in the first place, and a reactivation isn't the moment
-    to compound that.
+    live_mailboxes: list of {email, campaigns, ...} for mailboxes currently
+      attached to an active campaign. When the original sending mailbox is
+      dead, we pick the next entry (round-robin by picker_index) and switch
+      to hand-off framing.
+    live_by_email: precomputed set of live mailbox emails for O(1) lookup.
+
+    Skips leads where the email TLD is in the excluded set (.in / .pk).
+    Skips also when the original mailbox is dead AND we have no live mailbox
+    to hand off from.
     """
     if check_tld_geography(c.prospect_email) == "not_allowed":
         log.info(
@@ -256,6 +302,33 @@ async def draft_for_candidate(c: BacklogCandidate) -> Optional[DraftedFollowup]:
         thread = []
     thread = thread[:8]
 
+    # Route selection: same-thread reply from original mailbox iff that
+    # mailbox is still connected; otherwise new thread from a live mailbox
+    # with hand-off framing.
+    sending_mailbox_lc = (c.sending_mailbox or "").lower()
+    original_is_live = (
+        sending_mailbox_lc in (live_by_email or set())
+        if live_by_email is not None
+        else True  # unknown → assume live (falls back to error path if not)
+    )
+
+    if original_is_live:
+        send_mode = "reply"
+        send_from = c.sending_mailbox
+        handoff_from = ""
+    else:
+        # Pick a live mailbox to send from. Round-robin so we spread load.
+        if not live_mailboxes:
+            log.warning(
+                f"follow-up: no live mailboxes to hand off from for "
+                f"{c.prospect_email}, skipping"
+            )
+            return None
+        picked = live_mailboxes[picker_index % len(live_mailboxes)]
+        send_mode = "new_thread"
+        send_from = picked["email"]
+        handoff_from = _persona_first_name(c.sending_mailbox) or "a colleague"
+
     draft = await draft_followup(
         thread=thread,
         first_name=c.first_name or "",
@@ -263,8 +336,15 @@ async def draft_for_candidate(c: BacklogCandidate) -> Optional[DraftedFollowup]:
         prospect_email=c.prospect_email,
         followup_index=1,
         days_since_our_reply=c.days_since_our_reply,
+        handoff_from_persona=handoff_from,
     )
-    return DraftedFollowup(candidate=c, draft=draft, thread=thread)
+    return DraftedFollowup(
+        candidate=c,
+        draft=draft,
+        thread=thread,
+        send_mode=send_mode,
+        send_from_mailbox=send_from,
+    )
 
 
 # ── Redis-backed queue + pending state ──────────────────────────────────────
@@ -409,24 +489,38 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
 
     Called on demand from the admin endpoint. Approval / edit / skip is
     handled separately in main.py's Slack action handler.
+
+    Fetches the live-mailbox list once per batch so we don't hammer
+    /account/list per candidate. When a candidate's original sending
+    mailbox is dead, we pick a live one via round-robin and switch to
+    hand-off drafting.
     """
     picked = pop_queue(batch_size)
     if not picked:
         return {"posted": 0, "remaining": queue_size(), "detail": "queue empty"}
 
+    live_mailboxes = await list_live_mailboxes(active_campaign_ids=ACTIVE_CAMPAIGN_IDS)
+    live_by_email = {m["email"].lower() for m in live_mailboxes}
+    log.info(f"backlog: {len(live_mailboxes)} live mailboxes available for hand-off")
+
     posted = []
-    skipped_geo = 0
-    for c in picked:
+    skipped = 0
+    for i, c in enumerate(picked):
         if is_skipped(c.prospect_email):
             log.info(f"backlog: {c.prospect_email} previously skipped, dropping")
             continue
         try:
-            drafted = await draft_for_candidate(c)
+            drafted = await draft_for_candidate(
+                c,
+                live_mailboxes=live_mailboxes,
+                live_by_email=live_by_email,
+                picker_index=i,
+            )
         except Exception as e:
             log.exception(f"draft_for_candidate failed for {c.prospect_email}: {e}")
             drafted = None
         if drafted is None:
-            skipped_geo += 1
+            skipped += 1
             continue
 
         # Prior thread summary for the Slack card — one-liner per message.
@@ -438,6 +532,20 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
             snippet = " ".join((m.get("body") or "").split())[:180]
             thread_lines.append(f"• {sender}: {snippet}")
         thread_summary = "\n".join(thread_lines) or "(no thread available)"
+
+        # Show the send routing decision on the Slack card so the approver
+        # knows whether this will continue the original thread or open a
+        # fresh one from a new mailbox.
+        if drafted.send_mode == "new_thread":
+            route_note = (
+                f"↳ *New thread* from `{drafted.send_from_mailbox}` — "
+                f"original mailbox `{c.sending_mailbox}` no longer connected."
+            )
+        else:
+            route_note = (
+                f"↳ *Reply* on original thread from `{drafted.send_from_mailbox}`."
+            )
+        thread_summary = f"{route_note}\n\n{thread_summary}"
 
         # Post to Slack. record_id = the newest email id in the thread which
         # PlusVibe accepts as reply_to_id.
@@ -458,15 +566,22 @@ async def post_next_batch(batch_size: int = BATCH_SIZE) -> dict:
             log.exception(f"Slack post failed for {c.prospect_email}: {e}")
             continue
 
-        # Persist pending so the approve handler can send it.
+        # Persist pending so the approve handler can send it. send_mode +
+        # send_from_mailbox tell the handler whether to send_reply on the
+        # existing thread or send_new_email from the fresh mailbox.
+        # Persist Slack channel too so the edit path knows where to update.
+        from src.integrations.slack import SLACK_CHANNEL_ID as _SCHAN
         store_pending_followup(record_id, {
             "type": "backlog_reactivation",
             "prospect_email": c.prospect_email,
             "reply_to_email_id": c.reply_to_email_id,
-            "sending_mailbox": c.sending_mailbox,
+            "sending_mailbox": drafted.send_from_mailbox,
+            "original_sending_mailbox": c.sending_mailbox,
+            "send_mode": drafted.send_mode,
             "subject": c.reply_to_subject,
             "draft": drafted.draft,
             "slack_ts": slack_ts,
+            "slack_channel": _SCHAN,
             "candidate": {
                 "campaign_id": c.campaign_id,
                 "campaign_name": c.campaign_name,

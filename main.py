@@ -51,6 +51,7 @@ from src.integrations.plusvibe import (
     get_lead_data,
     list_received_emails,
     parse_webhook,
+    send_new_email,
     send_reply,
 )
 from src.integrations.slack import (
@@ -60,6 +61,7 @@ from src.integrations.slack import (
     post_disregard_notification,
     post_escalation_message,
     post_review_message,
+    post_send_failure_notice,
     post_unsubscribe_alert,
     update_message_approved,
     update_message_edited_sent,
@@ -535,30 +537,67 @@ async def _handle_edit_send(email_id: str, edited_text: str, manager: str):
 
 # ── Follow-up (backlog + cadence) handlers ──────────────────────────────────
 
+async def _send_followup(pending: dict, body: str) -> None:
+    """
+    Dispatch a follow-up over the right PlusVibe endpoint based on how
+    it was drafted:
+      send_mode="reply"      → same-thread reply from the original mailbox
+      send_mode="new_thread" → fresh email from a live mailbox with hand-off
+                               framing (original mailbox was disconnected)
+    """
+    send_mode = pending.get("send_mode") or "reply"
+    subject = pending.get("subject") or "Follow-up"
+    if send_mode == "new_thread":
+        # Strip a leading "Re: " so the new thread looks fresh.
+        clean_subject = subject
+        while clean_subject.lower().startswith("re:"):
+            clean_subject = clean_subject[3:].lstrip()
+        if not clean_subject:
+            clean_subject = "Quick follow-up on email + SMS"
+        await send_new_email(
+            from_email=pending["sending_mailbox"],
+            to_email=pending["prospect_email"],
+            subject=clean_subject,
+            body=body,
+        )
+    else:
+        await send_reply(
+            reply_to_id=pending["reply_to_email_id"] or "",
+            subject=subject,
+            from_email=pending["sending_mailbox"],
+            to_email=pending["prospect_email"],
+            body=body,
+        )
+
+
 async def _handle_followup_approve(
     record_id: str, manager: str, channel: str, message_ts: str
 ) -> None:
-    """Send an approved follow-up as-drafted, same thread, same mailbox."""
+    """Send an approved follow-up, routing by send_mode."""
     pending = get_pending_followup(record_id)
     if not pending:
         log.warning(f"No pending follow-up for {record_id}")
         return
     try:
-        await send_reply(
-            reply_to_id=pending["reply_to_email_id"] or record_id,
-            subject=pending["subject"] or "Follow-up",
-            from_email=pending["sending_mailbox"],
-            to_email=pending["prospect_email"],
-            body=pending["draft"],
-        )
+        await _send_followup(pending, pending["draft"])
         update_message_approved(channel, message_ts, manager)
         delete_pending_followup(record_id)
         log.info(
             f"follow-up sent to {pending['prospect_email']} by {manager} "
-            f"(reactivation, mailbox={pending['sending_mailbox']})"
+            f"(mode={pending.get('send_mode', 'reply')}, "
+            f"from={pending['sending_mailbox']})"
         )
     except Exception as e:
         log.exception(f"Failed to send follow-up for {record_id}: {e}")
+        # Leave the pending state intact so the manager can retry after
+        # whatever underlying issue is fixed — but tell them why on Slack.
+        post_send_failure_notice(
+            channel=channel,
+            ts=message_ts,
+            prospect_email=pending.get("prospect_email", record_id),
+            error=str(e),
+            manager=manager,
+        )
 
 
 async def _handle_followup_edit_send(
@@ -568,21 +607,15 @@ async def _handle_followup_edit_send(
     if not pending:
         log.warning(f"No pending follow-up for {record_id}")
         return
+    channel = pending.get("slack_channel") or SLACK_CHANNEL_ID
+    ts = pending.get("slack_ts") or ""
     try:
-        await send_reply(
-            reply_to_id=pending["reply_to_email_id"] or record_id,
-            subject=pending["subject"] or "Follow-up",
-            from_email=pending["sending_mailbox"],
-            to_email=pending["prospect_email"],
-            body=edited_text,
-        )
-        # The original Slack card's channel/ts are stored inside pending.
-        # We look them up via the ts we posted:
+        await _send_followup(pending, edited_text)
         from src.integrations.slack import client as _sc
         try:
             _sc.chat_update(
-                channel=SLACK_CHANNEL_ID,
-                ts=pending["slack_ts"],
+                channel=channel,
+                ts=ts,
                 text=f"✏️ Edited & sent by {manager}",
                 blocks=[{
                     "type": "section",
@@ -596,6 +629,13 @@ async def _handle_followup_edit_send(
         log.info(f"follow-up edited+sent to {pending['prospect_email']} by {manager}")
     except Exception as e:
         log.exception(f"Failed to send edited follow-up for {record_id}: {e}")
+        post_send_failure_notice(
+            channel=channel,
+            ts=ts,
+            prospect_email=pending.get("prospect_email", record_id),
+            error=str(e),
+            manager=manager,
+        )
 
 
 async def _handle_followup_skip(

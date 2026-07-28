@@ -176,6 +176,7 @@ async def draft_followup(
     prospect_email: str = "",
     followup_index: int = 1,
     days_since_our_reply: int = 0,
+    handoff_from_persona: str = "",
     calendly_url: str = "https://calendly.com/trendfeed-media/email-marketing-audit",
 ) -> str:
     """
@@ -195,16 +196,36 @@ async def draft_followup(
     """
     thread_str = _format_thread(thread)
 
-    intro_hint = (
-        "This is the FIRST reactivation touch after a period of silence. "
-        "Do not say 'circling back' — write like a busy operator with a "
-        "specific reason to re-open the thread. Reference the last question "
-        "or concern from the thread."
-        if followup_index == 1 else
-        f"This is follow-up #{followup_index} in the cadence "
-        f"({days_since_our_reply} days after our previous reply). Keep it "
-        f"shorter and sharper than the previous message."
-    )
+    if handoff_from_persona:
+        # New thread from a live mailbox because the original persona's
+        # mailbox no longer exists in PlusVibe. Must introduce as a colleague
+        # taking over — never pretend to be the original sender.
+        intro_hint = (
+            f"THIS IS A NEW THREAD FROM A DIFFERENT PERSONA. The original "
+            f"sender ({handoff_from_persona}) has moved off this account. "
+            f"You are a colleague picking it back up. Open with a brief "
+            f"hand-off — something like 'Hey [name], picking this up from "
+            f"[first-name-of-original] who reached out about email and SMS "
+            f"for [brand] a while back' — then close the loop on the "
+            f"specific concern or question that was left open in the thread. "
+            f"Do not pretend to be the original sender. Do not say 'as I "
+            f"mentioned' — you didn't. Do not apologise for the delay. "
+            f"Use the first name of the original persona only (e.g. 'from "
+            f"Elena' from 'Elena Clifford'), not the full email address."
+        )
+    elif followup_index == 1:
+        intro_hint = (
+            "This is the FIRST reactivation touch after a period of silence. "
+            "Do not say 'circling back' — write like a busy operator with a "
+            "specific reason to re-open the thread. Reference the last question "
+            "or concern from the thread."
+        )
+    else:
+        intro_hint = (
+            f"This is follow-up #{followup_index} in the cadence "
+            f"({days_since_our_reply} days after our previous reply). Keep it "
+            f"shorter and sharper than the previous message."
+        )
 
     user_text = f"""FOLLOW-UP INDEX: {followup_index}
 INTRO CONTEXT: {intro_hint}
