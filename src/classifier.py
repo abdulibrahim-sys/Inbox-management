@@ -51,7 +51,7 @@ Rules:
 - Some intents look similar — distinguish them carefully:
     * 4 (wants email, not a call) vs 16 (send me a proposal / strategy first). "Just answer me here" is 4. "Send me a plan / audit / teardown / strategy doc" is 16.
     * 5 (how does the guarantee work) vs 6 (what does 'you don't pay' mean) vs 11 (sounds too good to be true). 5 is a first-time factual question. 6 is a follow-up challenge specifically on the wording. 11 is broad skepticism.
-    * 10 (case studies / proof / references) vs 11 (sounds too good to be true). 10 is "show me evidence". 11 is doubt about the offer itself.
+    * 10 (case studies / proof / references, incl. live reference call requests) vs 11 (sounds too good to be true). 10 is "show me evidence" — including when the prospect specifically wants to speak 1-on-1 with an existing client BEFORE booking with us; that maps to intent 10 (VARIANT B in the playbook), not escalate. 11 is doubt about the offer itself with no specific proof ask.
     * 17 (already have an agency / already have flows) vs 27 (not interested with no question). 17 leaves room for a conversation. 27 is a hard no.
     * 24 (what ads did you see) is very specific — they are challenging the outreach hook that mentioned their ads.
     * 30 (only reply is 'we don't run ads') is different from 24 — 30 is a flat statement, no question about which ad.
