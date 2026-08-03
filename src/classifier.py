@@ -57,11 +57,55 @@ Rules:
     * 30 (only reply is 'we don't run ads') is different from 24 — 30 is a flat statement, no question about which ad.
     * 32 (unsubscribe / hostile / legal) is the only suppressing intent. "Not interested" alone is 27, not 32.
 
-Also apply these hard escalation triggers on top of intent choice — if any of these are true, output intent_n=0 and describe which trigger fired in escalation_reason:
+Also apply these hard escalation triggers on top of intent choice — if any of these are true, call the tool with intent_n=0 and describe which trigger fired in escalation_reason:
 {ESCALATION_TRIGGERS}
 
-Output STRICT JSON only, no prose, no code fences:
-{{"intent_n": <int>, "confidence": "high|medium|low", "reasoning": "<one sentence>", "escalation_reason": "<string, empty if intent_n != 0>"}}"""
+You MUST call the classify_reply tool exactly once with the four fields. Do not respond with prose."""
+
+
+# Anthropic tool-use schema — forces the model to return structured data.
+# We used to ask for JSON in the system prompt and parse the text response.
+# When the classifier hit an ambiguous case ("mixed intents"), the model
+# sometimes returned plain-text prose ("The reply mixes several distinct
+# intents...") and the parse failed. Tool use makes the JSON output
+# structural, so that whole failure mode is gone.
+_CLASSIFY_TOOL = {
+    "name": "classify_reply",
+    "description": (
+        "Record the classification of a prospect reply. Must be called "
+        "exactly once per invocation."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "intent_n": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 32,
+                "description": "Intent number 1-32 from the library, or 0 for escalate/unknown.",
+            },
+            "confidence": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+                "description": "How confident you are in the classification.",
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "One-sentence explanation.",
+            },
+            "escalation_reason": {
+                "type": "string",
+                "description": (
+                    "Populated when intent_n=0. Which hard trigger fired "
+                    "OR why the reply couldn't be placed in one of the 32 "
+                    "intents (e.g. 'mixed intents', 'reference call request', "
+                    "'qualification criteria disclosure'). Empty otherwise."
+                ),
+            },
+        },
+        "required": ["intent_n", "confidence", "reasoning"],
+    },
+}
 
 
 async def classify_reply(body: str, subject: str = "", thread_context: str = "") -> dict:
@@ -69,6 +113,10 @@ async def classify_reply(body: str, subject: str = "", thread_context: str = "")
     Classify a prospect reply. `thread_context` is optional — a compact
     summary of prior exchanges on the same thread, used to distinguish
     move-1 vs move-2 style intents.
+
+    Uses Anthropic tool use to force structured output, so free-form prose
+    responses (which used to cause parse errors on ambiguous cases) can't
+    happen. If the model still fails to call the tool, we escalate.
     """
     user_prompt = (
         f"Subject: {subject or '(none)'}\n\n"
@@ -83,27 +131,27 @@ async def classify_reply(body: str, subject: str = "", thread_context: str = "")
     try:
         response = await _get_client().messages.create(
             model=MODEL,
-            max_tokens=250,
+            max_tokens=400,
             system=CLASSIFIER_SYSTEM,
+            tools=[_CLASSIFY_TOOL],
+            tool_choice={"type": "tool", "name": "classify_reply"},
             messages=[{"role": "user", "content": user_prompt}],
         )
-        raw = response.content[0].text.strip()
     except Exception as e:
         log.exception(f"Classifier LLM call failed: {e}")
         return _escalation_result("classifier error")
 
-    # Strip markdown code fences if the model added them.
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
+    # Extract the tool_use block — with tool_choice forced, this is
+    # guaranteed to exist unless the API totally failed.
+    result: dict | None = None
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == "classify_reply":
+            result = block.input or {}
+            break
 
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        log.warning(f"Classifier returned non-JSON: {raw[:200]}")
-        return _escalation_result("classifier parse error")
+    if not result:
+        log.warning("Classifier did not call the tool; escalating.")
+        return _escalation_result("classifier did not return structured output")
 
     intent_n = int(result.get("intent_n") or 0)
     intent = get_intent(intent_n)
