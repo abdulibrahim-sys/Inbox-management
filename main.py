@@ -60,9 +60,11 @@ from src.integrations.slack import (
     open_edit_modal,
     post_disregard_notification,
     post_escalation_message,
+    post_metrics_report,
     post_review_message,
     post_send_failure_notice,
     post_unsubscribe_alert,
+    update_call_outcome_message,
     update_message_approved,
     update_message_edited_sent,
     update_message_skipped,
@@ -80,6 +82,7 @@ from src.followup_engine import (
     scan_backlog,
     store_pending_followup,
 )
+from src import metrics
 from src.never_replied_engine import (
     enqueue_candidates as nr_enqueue,
     peek_queue as nr_peek,
@@ -91,13 +94,15 @@ from src.never_replied_engine import (
 # All replies route to SLACK_CHANNEL_ID (#inbox-agent-reply). Add / remove
 # campaign IDs here as they're launched or paused in PlusVibe. The unibox
 # poller iterates every entry in ACTIVE_CAMPAIGNS.
-CAMPAIGN_AI_ARK_BIG_BRANDS = "6a4bb4325d0a8ff67b02b811"  # Ai-ark-big brands - Copy
-CAMPAIGN_2_WEEKS_JULY      = "6a60f7d25756c23899f6bbd2"  # 2 weeks - july
+# Only INTERESTED / MEETING_BOOKED replies from these campaigns reach Slack.
+CAMPAIGN_SEP_9_28_EMAIL = "6aba929529fb2460cf05d6ee"  # Sep 9/28-Email (launched 2026-09-28)
 
 ACTIVE_CAMPAIGNS: list[str] = [
-    CAMPAIGN_AI_ARK_BIG_BRANDS,
-    CAMPAIGN_2_WEEKS_JULY,
+    CAMPAIGN_SEP_9_28_EMAIL,
 ]
+
+# Daily metrics report to Slack, posted at this UTC hour for the previous day.
+METRICS_REPORT_HOUR_UTC = 8
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -131,6 +136,7 @@ async def lifespan(app: FastAPI):
     log.info("Inbox Management Agent starting up")
     asyncio.create_task(_beehiiv_retry_scheduler())
     asyncio.create_task(_unibox_poller())
+    asyncio.create_task(_metrics_report_scheduler())
     yield
     log.info("Inbox Management Agent shutting down")
 
@@ -161,12 +167,28 @@ async def plusvibe_webhook(request: Request, background: BackgroundTasks):
 
     log.info(f"PlusVibe webhook parsed: {json.dumps(body)[:400]}")
 
+    if not _webhook_in_scope(body):
+        log.info("PlusVibe webhook: out of scope (campaign or event type), ignored")
+        return JSONResponse({"status": "ignored"}, status_code=200)
+
     if _is_meeting_booked(body):
         background.add_task(_process_meeting_booked, body)
     else:
         background.add_task(_process_reply, body)
 
     return JSONResponse({"status": "received"}, status_code=200)
+
+
+def _webhook_in_scope(payload: dict) -> bool:
+    """Only positive events (interested / meeting booked) from active campaigns."""
+    data = payload.get("data", payload)
+    campaign_id = str(data.get("campaign_id") or "")
+    if campaign_id and campaign_id not in ACTIVE_CAMPAIGNS:
+        return False
+    event_type = (payload.get("event_type") or payload.get("event") or "").upper()
+    if event_type and "INTERESTED" not in event_type and not _is_meeting_booked(payload):
+        return False
+    return True
 
 
 def _is_meeting_booked(payload: dict) -> bool:
@@ -189,6 +211,22 @@ async def _process_reply(payload: dict) -> None:
         reply = parse_webhook(payload)
         log.info(f"Processing reply from {reply.from_email} ({reply.company_name})")
 
+        # Resolve email_id if the webhook didn't include one
+        if not reply.email_id and reply.from_email:
+            reply.email_id = await fetch_latest_email_id(reply.from_email) or ""
+            log.info(f"Resolved email_id via unibox: {reply.email_id}")
+
+        record_id = reply.email_id or reply.lead_id or reply.from_email
+        if not record_id:
+            log.error("No identifier for this reply, skipping")
+            return
+
+        # Poller + webhook can both deliver the same reply; handle it once.
+        if not metrics.claim_reply(record_id):
+            log.info(f"Reply {record_id} already processed, skipping")
+            return
+        metrics.record(metrics.POSITIVE_REPLY, reply.campaign_id or "")
+
         # 1. Beehiiv subscribe (positive-reply signal)
         if reply.from_email:
             try:
@@ -199,16 +237,6 @@ async def _process_reply(payload: dict) -> None:
                 )
             except Exception:
                 log.exception("Beehiiv subscribe failed (non-fatal)")
-
-        # 2. Resolve email_id if the webhook didn't include one
-        if not reply.email_id and reply.from_email:
-            reply.email_id = await fetch_latest_email_id(reply.from_email) or ""
-            log.info(f"Resolved email_id via unibox: {reply.email_id}")
-
-        record_id = reply.email_id or reply.lead_id or reply.from_email
-        if not record_id:
-            log.error("No identifier for this reply, skipping")
-            return
 
         # 3. Fetch thread for classifier context + move-1/2 counting
         thread = []
@@ -255,6 +283,16 @@ async def _route_by_disposition(
     thread: list[dict],
 ) -> None:
     disposition = classification.get("disposition")
+    metrics.record(
+        {
+            "draft": metrics.DRAFT_POSTED,
+            "disregard": metrics.DISREGARDED,
+            "park": metrics.SILENT,
+            "stop": metrics.SILENT,
+            "suppress": metrics.SUPPRESSED,
+        }.get(disposition, metrics.ESCALATED),
+        reply.campaign_id or "",
+    )
     intent_n = classification.get("intent_n", 0)
     intent_name = classification.get("intent_name", "unknown")
 
@@ -370,6 +408,7 @@ async def _process_meeting_booked(payload: dict) -> None:
         name = f"{first_name} {last_name}".strip() or email
         company = data.get("company_name") or ""
         campaign = data.get("campaign_name") or ""
+        campaign_id = str(data.get("campaign_id") or "")
 
         if not email:
             log.info("Meeting booked: no email in payload, skipping")
@@ -380,8 +419,16 @@ async def _process_meeting_booked(payload: dict) -> None:
             log.info(f"Meeting booked: skipping sending account {email}")
             return
 
+        if not metrics.claim_reply(f"meeting:{email}"):
+            log.info(f"Meeting booked already posted for {email}, skipping")
+            return
+        metrics.record(metrics.MEETING_BOOKED, campaign_id)
+
         from src.integrations.slack import post_call_booked_message
-        post_call_booked_message(name=name, company=company, email=email, campaign=campaign)
+        post_call_booked_message(
+            name=name, company=company, email=email,
+            campaign=campaign, campaign_id=campaign_id,
+        )
         log.info(f"Meeting booked posted for {email}")
 
         try:
@@ -401,11 +448,21 @@ _SENDING_DOMAIN_KEYWORDS = {
     "trendfeed", "trendsender", "trendconnect", "trendreach",
     "hiretrendfeed", "gettrendfeed", "jointrendfeed", "trytrendfeed",
 }
-_SENDING_DOMAIN_EXACT = {"trendfeed.co.uk", "trendfeed.co"}
+_SENDING_DOMAIN_EXACT = {
+    "trendfeed.co.uk", "trendfeed.co",
+    # Sep 9/28-Email mailboxes
+    "feedcero.com", "feedmaro.com", "feedvel.com", "feedvero.com",
+    "feedvoro.com", "feedzelo.com", "trendako.com", "trendcero.com",
+    "trendemi.com", "trendmaro.com", "trendrano.com", "trendriva.com",
+    "trendveta.com",
+}
 _SENDING_PERSONAS = {
     "elena clifford", "mina willard", "riley marchmain", "julia milton",
     "hanna raymond", "kendall hollinghurst", "crystal rosewood",
     "erin whitfield", "bethany cranston", "lacey northcott", "raymond hanna",
+    "chloe richardson", "daniel brooks", "emily carter", "erin campbell",
+    "hannah reed", "jessica morgan", "kaitlyn moore", "lauren brooks",
+    "megan collins", "rachel bennett", "ryan declan",
 }
 
 
@@ -447,7 +504,11 @@ async def slack_actions(request: Request, background: BackgroundTasks):
         channel = payload["channel"]["id"]
         message_ts = payload["message"]["ts"]
 
-        if action_id == "approve_reply":
+        if action_id in _CALL_OUTCOMES:
+            background.add_task(
+                _handle_call_outcome, action_id, action_value, manager, channel, message_ts
+            )
+        elif action_id == "approve_reply":
             background.add_task(_handle_approve, action_value, manager, channel, message_ts)
         elif action_id == "deny_edit_reply":
             pending = _get_pending(action_value)
@@ -497,6 +558,31 @@ async def slack_actions(request: Request, background: BackgroundTasks):
     return Response(status_code=200)
 
 
+_CALL_OUTCOMES = {
+    "call_showed": ("Showed", metrics.CALL_SHOWED),
+    "call_no_show": ("No Show", metrics.CALL_NO_SHOW),
+    "call_not_qualified": ("Not Qualified", metrics.CALL_NOT_QUALIFIED),
+}
+
+
+async def _handle_call_outcome(
+    action_id: str, value: str, manager: str, channel: str, message_ts: str
+) -> None:
+    outcome, event = _CALL_OUTCOMES[action_id]
+    try:
+        info = json.loads(value or "{}")
+    except Exception:
+        info = {}
+    metrics.record(event, info.get("campaign_id") or "")
+    update_call_outcome_message(
+        channel, message_ts,
+        info.get("name") or info.get("email") or "",
+        info.get("company") or "",
+        outcome, manager,
+    )
+    log.info(f"Call outcome {outcome} for {info.get('email')} by {manager}")
+
+
 async def _handle_approve(email_id: str, manager: str, channel: str, message_ts: str):
     pending = _get_pending(email_id)
     if not pending:
@@ -514,6 +600,7 @@ async def _handle_approve(email_id: str, manager: str, channel: str, message_ts:
         )
         update_message_approved(channel, message_ts, manager)
         _delete_pending(email_id)
+        metrics.record(metrics.SENT_APPROVED, reply_data.get("campaign_id") or "")
         log.info(f"Approved and sent reply for {email_id} by {manager}")
     except Exception as e:
         log.exception(f"Failed to send approved reply: {e}")
@@ -537,6 +624,7 @@ async def _handle_edit_send(email_id: str, edited_text: str, manager: str):
         )
         update_message_edited_sent(channel, message_ts, manager)
         _delete_pending(email_id)
+        metrics.record(metrics.SENT_EDITED, reply_data.get("campaign_id") or "")
         log.info(f"Edited and sent reply for {email_id} by {manager}")
     except Exception as e:
         log.exception(f"Failed to send edited reply: {e}")
@@ -682,6 +770,46 @@ async def _beehiiv_retry_scheduler():
             break
         except Exception as e:
             log.exception(f"Beehiiv retry scheduler error: {e}")
+
+
+# ── Daily metrics report ────────────────────────────────────────────────────
+
+async def _post_metrics(day=None) -> list[dict]:
+    snapshots = []
+    for cid in ACTIVE_CAMPAIGNS:
+        snap = await metrics.build_snapshot(cid, day)
+        post_metrics_report(snap)
+        snapshots.append(snap)
+    return snapshots
+
+
+async def _metrics_report_scheduler():
+    """
+    Post yesterday's metrics for every active campaign once a day at
+    METRICS_REPORT_HOUR_UTC. A Redis claim per day stops a restart (or two
+    replicas) from double-posting.
+    """
+    from datetime import datetime, timedelta, timezone
+    log.info("Metrics report scheduler started")
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            target = now.replace(
+                hour=METRICS_REPORT_HOUR_UTC, minute=0, second=0, microsecond=0
+            )
+            if target <= now:
+                target += timedelta(days=1)
+            await asyncio.sleep((target - now).total_seconds())
+
+            day_key = datetime.now(timezone.utc).date().isoformat()
+            if metrics.claim_reply(f"metrics-report:{day_key}"):
+                await _post_metrics()
+                log.info(f"Daily metrics report posted for {day_key}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.exception(f"Metrics report scheduler error: {e}")
+            await asyncio.sleep(300)
 
 
 # ── Unibox poller ────────────────────────────────────────────────────────────
@@ -849,6 +977,23 @@ async def admin_test_slack():
         return {"ok": True, "ts": r["ts"], "channel": SLACK_CHANNEL_ID}
     except Exception as e:
         return {"ok": False, "error": str(e), "channel": SLACK_CHANNEL_ID}
+
+
+@app.get("/admin/metrics")
+async def admin_metrics(day: str | None = None):
+    """Metrics snapshot for every active campaign. ?day=YYYY-MM-DD (default yesterday)."""
+    from datetime import date
+    d = date.fromisoformat(day) if day else None
+    return {"campaigns": [await metrics.build_snapshot(cid, d) for cid in ACTIVE_CAMPAIGNS]}
+
+
+@app.post("/admin/metrics/post")
+async def admin_metrics_post(day: str | None = None):
+    """Post the metrics report to Slack now. ?day=YYYY-MM-DD (default yesterday)."""
+    from datetime import date
+    d = date.fromisoformat(day) if day else None
+    snaps = await _post_metrics(d)
+    return {"posted": len(snaps)}
 
 
 @app.post("/admin/reprocess-last-webhook")

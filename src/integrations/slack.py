@@ -288,12 +288,16 @@ def _update_message_status(channel: str, ts: str, status_text: str):
         pass
 
 
-def post_call_booked_message(name: str, company: str, email: str, campaign: str = "") -> str:
+def post_call_booked_message(
+    name: str, company: str, email: str, campaign: str = "", campaign_id: str = ""
+) -> str:
     """
     Post a call booked notification with Showed / No Show / Not Qualified buttons.
     Returns the message ts.
     """
-    value = json.dumps({"email": email, "name": name, "company": company})
+    value = json.dumps({
+        "email": email, "name": name, "company": company, "campaign_id": campaign_id,
+    })
     blocks = [
         {
             "type": "header",
@@ -305,7 +309,7 @@ def post_call_booked_message(name: str, company: str, email: str, campaign: str 
                 {"type": "mrkdwn", "text": f"*👤 Prospect:*\n{name}"},
                 {"type": "mrkdwn", "text": f"*🏢 Company:*\n{company}"},
                 {"type": "mrkdwn", "text": f"*📧 Email:*\n{email}"},
-                {"type": "mrkdwn", "text": f"*📣 Campaign:*\n{campaign or '2 Weeks'}"},
+                {"type": "mrkdwn", "text": f"*📣 Campaign:*\n{campaign or 'Unknown'}"},
             ],
         },
         {
@@ -521,3 +525,80 @@ def post_unsubscribe_alert(first_name: str, last_name: str, company_name: str, f
             f"Process removal in PlusVibe immediately."
         ),
     )
+
+
+def _fmt_pct(v) -> str:
+    return "n/a" if v is None else f"{v:.2f}%"
+
+
+def post_metrics_report(snapshot: dict, title: str = "📊 Daily campaign metrics") -> str:
+    """Post one campaign's metrics snapshot (see src/metrics.build_snapshot)."""
+    pv = snapshot["plusvibe"]
+    ag = snapshot["agent"]
+
+    def _pv_block(label: str, s: dict) -> dict:
+        bounce = _fmt_pct(s["bounce_rate_pct"])
+        if (s["bounce_rate_pct"] or 0) >= 2.0:
+            bounce += " ⚠️"
+        return {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*{label}*\n"
+                    f"Sent *{s['sent']:,}* · New leads *{s['new_leads_contacted']:,}*\n"
+                    f"Replies *{s['replies']}* ({_fmt_pct(s['reply_rate_pct'])} of sent)\n"
+                    f"Positive *{s['positive_replies']}* "
+                    f"({_fmt_pct(s['positive_reply_rate_pct'])} of replies)\n"
+                    f"Bounced *{s['bounced']}* ({bounce}) · Unsubs *{s['unsubscribed']}*"
+                ),
+            },
+        }
+
+    def _agent_line(label: str, c: dict) -> str:
+        g = lambda k: c.get(k, 0)
+        return (
+            f"*{label}:* {g('positive_reply')} positive replies to Slack · "
+            f"{g('draft_posted')} drafts · "
+            f"{g('sent_approved') + g('sent_edited')} sent "
+            f"({g('sent_edited')} edited) · "
+            f"{g('escalated')} escalated · "
+            f"{g('meeting_booked')} meetings booked · "
+            f"calls {g('call_showed')} showed / {g('call_no_show')} no show"
+        )
+
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": title}},
+        {
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": (
+                    f"*{snapshot['campaign_name']}* ({snapshot['status'] or 'unknown'}) · "
+                    f"day = {snapshot['day']} UTC"
+                ),
+            }],
+        },
+        _pv_block(f"{snapshot['day']}", pv["day"]),
+        _pv_block("Last 7 days", pv["last_7_days"]),
+        _pv_block("Campaign lifetime", pv["lifetime"]),
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "\n".join([
+                    "*Agent activity*",
+                    _agent_line(snapshot["day"], ag["day"]),
+                    _agent_line("Last 7 days", ag["last_7_days"]),
+                    _agent_line("Lifetime", ag["lifetime"]),
+                ]),
+            },
+        },
+    ]
+    response = client.chat_postMessage(
+        channel=SLACK_CHANNEL_ID,
+        blocks=blocks,
+        text=f"Campaign metrics — {snapshot['campaign_name']} ({snapshot['day']})",
+    )
+    return response["ts"]

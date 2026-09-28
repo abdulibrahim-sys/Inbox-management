@@ -51,12 +51,17 @@ reply_agent_instructions.md   # Source-of-truth spec for the reply agent
 **Ground truth for facts + intent library:** [data/reply_agent_spec.py](data/reply_agent_spec.py). Both classifier and drafter import from here — do not duplicate facts elsewhere.
 
 ### Active campaigns
-Both feed replies into `#inbox-agent-reply` (`C0AJG9V9JSE`). Update the `ACTIVE_CAMPAIGNS` list in `main.py` when campaigns start/pause in PlusVibe.
+Positive replies (INTERESTED + MEETING_BOOKED only) feed into `#inbox-agent-reply` (`C0AJG9V9JSE`). Update the `ACTIVE_CAMPAIGNS` list in `main.py` when campaigns start/pause in PlusVibe. Webhook events from other campaigns, or non-positive events, are ignored.
 
 | Campaign | ID |
 |---|---|
-| Ai-ark-big brands - Copy | `6a4bb4325d0a8ff67b02b811` |
-| 2 weeks - july           | `6a60f7d25756c23899f6bbd2` |
+| Sep 9/28-Email | `6aba929529fb2460cf05d6ee` |
+
+### Metrics
+`src/metrics.py`. Daily Slack report at 08:00 UTC for the previous UTC day (day / last 7 days / lifetime), per active campaign.
+- PlusVibe campaign stats: sent, replies, positive, bounces, unsubs. Positive reply rate = positive / replies (not / sent). Bounce ⚠️ only at 2%+.
+- Agent counters in Upstash Redis (`metrics:{campaign_id}:total` and `metrics:{campaign_id}:{YYYY-MM-DD}`): positive replies posted, drafts, sent (approved/edited), escalated, meetings booked, call outcomes (Showed / No Show / Not Qualified buttons).
+- Reply dedup (`seen:reply:{id}`) is Redis-backed, so poller + webhook + restarts don't double-post.
 
 ### Flow
 ```
@@ -97,6 +102,8 @@ Optional / kept for the next CRM build: `GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCO
 - `POST /admin/register-webhook`      — body: `{"url": "https://..."}`
 - `POST /admin/retry-beehiiv`
 - `POST /admin/test-slack`
+- `GET  /admin/metrics`               — metrics JSON, `?day=YYYY-MM-DD` (default yesterday)
+- `POST /admin/metrics/post`          — post the metrics report to Slack now
 - `POST /admin/reprocess-last-webhook` — body: raw PlusVibe webhook JSON to replay
 - `POST /admin/backlog/scan`           — enumerate ghosted leads for reactivation
 - `GET  /admin/backlog/queue`          — peek at what's queued
